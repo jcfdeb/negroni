@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/negroni-types",
+    "crates/negroni-config",
+    "crates/negroni-watchdog",
+    "crates/negroni-dcs",
+    "crates/negroni-pg",
+    "crates/negroni-ha",
+    "crates/negroni-api",
+    "crates/negroni-cli",
+    "bin/negroni",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[workspace.dependencies]
+# Internal workspace crates
+negroni-api = { path = "crates/negroni-api" }
+negroni-cli = { path = "crates/negroni-cli" }
+negroni-config = { path = "crates/negroni-config" }
+negroni-dcs = { path = "crates/negroni-dcs" }
+negroni-ha = { path = "crates/negroni-ha" }
+negroni-pg = { path = "crates/negroni-pg" }
+negroni-types = { path = "crates/negroni-types" }
+negroni-watchdog = { path = "crates/negroni-watchdog" }
+
+# Pure-Rust external dependencies (zero C/OpenSSL toolchain required)
+anyhow = "1.0"
+arc-swap = "1.9"
+clap = { version = "4.5", features = ["derive", "env"] }
+compact_str = { version = "0.10", features = ["serde"] }
+rustix = { version = "1.1", features = ["fs", "process"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_norway = "0.9"
+smallvec = "1.16"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "net", "process", "signal", "sync", "time", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
