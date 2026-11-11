@@ -6,26 +6,26 @@ Every task below maps directly to `docs/HLD.md` and `docs/LLD.md`. Complete phas
 
 ## Phase 0: Workspace Foundation, Wire Types & Config Engine
 
-- [ ] **0.1 Workspace & Multicall Binary Bootstrap**
+- [x] **0.1 Workspace & Multicall Binary Bootstrap**
   - **Files:** `Cargo.toml`, `bin/negroni/Cargo.toml`, `bin/negroni/src/main.rs`, stub `lib.rs` in all 8 crates.
   - **Deliverable:** Configure workspace dependencies, `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`, `argv[0]` symlink detection (`negroni` / `negronictl` / `patronictl`), and `negroni ctl` subcommand routing.
-- [ ] **0.2 Core Types & Patroni Wire Models (`negroni-types`)**
+- [x] **0.2 Core Types & Patroni Wire Models (`negroni-types`)**
   - **Files:** `crates/negroni-types/src/lib.rs`, `crates/negroni-types/tests/wire_snapshots.rs`.
-  - **Deliverable:** Implement `WalLsn` (`u64` JSON <-> `X/YYYYYYYY` `Display`/`FromStr`), `CasToken`, `LeaseHandle`, `Versioned<T>`, `MemberData`, `ClusterStatus`, `SyncState`, `FailoverIntent`, and `ClusterSnapshot` with round-trip snapshot tests against real Patroni 4.1+ JSON payloads.
-- [ ] **0.3 Configuration Loader, Dual-Prefix Env Overlay & Timing Validator (`negroni-config`)**
+  - **Deliverable:** Implement `WalLsn` (`u64` JSON <-> `X/YYYYYYYY` `Display`/`FromStr`), `CasToken`, `LeaseHandle`, `Versioned<T>`, `MemberData`, `ClusterStatus`, `SyncState`, `FailoverIntent`, `HistoryEntry`, and `ClusterSnapshot` with round-trip snapshot tests against real Patroni 4.1+ JSON payloads.
+- [x] **0.3 Configuration Loader, Dual-Prefix Env Overlay & Timing Validator (`negroni-config`)**
   - **Files:** `crates/negroni-config/src/{lib.rs, env_overlay.rs, timing.rs, schema.rs}`.
-  - **Deliverable:** Parse `patroni.yml` (`saphyr`), merge `PATRONI_*` and `NEGRONI_*` overrides with conflict warnings, merge dynamic DCS `/config`, and enforce `validate_timings` (`loop_wait + 2 * retry_timeout <= ttl` and `B_demote >= 2s`).
+  - **Deliverable:** Parse `patroni.yml` (`saphyr`), merge `PATRONI_*` and `NEGRONI_*` overrides with redacted conflict warnings, merge dynamic DCS `/config` (RFC 7396), and enforce `validate_timings` (`loop_wait + 2 * retry_timeout <= ttl` and `B_demote >= 2s`).
 
 ---
 
 ## Phase 1: Pure HA Reducer, Hardware Watchdog & Deterministic Simulation
 
-- [ ] **1.1 Hardware Watchdog OS Thread & Systemd Notifier (`negroni-watchdog`)**
+- [x] **1.1 Hardware Watchdog OS Thread & Systemd Notifier (`negroni-watchdog`)**
   - **Files:** `crates/negroni-watchdog/src/{lib.rs, thread.rs, ioctl_linux.rs, systemd.rs}`.
-  - **Deliverable:** Dedicated pre-Tokio `std::thread` managing `/dev/watchdog` (`WDIOC_SETTIMEOUT`, `WDIOC_KEEPALIVE`, magic `'V'` disarm), software mock watchdog for unit tests, and native `NOTIFY_SOCKET` (`sd_notify`) client.
+  - **Deliverable:** Dedicated pre-Tokio `std::thread` managing `/dev/watchdog` (`WDIOC_SETTIMEOUT` with kernel granularity readback validation, `WDIOC_KEEPALIVE`, magic `'V'` disarm), software mock watchdog for unit tests, and native `NOTIFY_SOCKET` (`sd_notify`) client.
 - [ ] **1.2 Pure Synchronous State Reducer (`negroni-ha::reducer`)**
   - **Files:** `crates/negroni-ha/src/{reducer.rs, election.rs, sync_standby.rs}`.
-  - **Deliverable:** Implement all 7 HA states, `op_epoch` fencing, pre-flight `LeaseProof` math, priority (`FIRST N`) and quorum (`ANY N`) synchronous standby computation (`sync_priority`, `nosync`), `FailsafePrimary` quorum rules, and `Paused` transitions.
+  - **Deliverable:** Implement all HA states (`ArmingPrimary` watchdog gate, peer-LSN `ElectionCandidate` discovery, multi-tick `FailsafePrimary` renewal & DCS recovery, and `Paused` primary preservation), `rpc_epoch` / `state_epoch` split fencing, pre-flight `LeaseProof` math, and priority (`FIRST N`) / quorum (`ANY N`) synchronous standby computation (`sync_priority`, `nosync`).
 - [ ] **1.3 Cancel-Safe Actor Shell & Background Job Supervisor (`negroni-ha::actor`)**
   - **Files:** `crates/negroni-ha/src/{lib.rs, actor.rs, dispatcher.rs, jobs.rs}`.
   - **Deliverable:** Implement `coordinator_loop` (strictly cancel-safe `tokio::select!`), `EffectDispatcher`, cancellable `JobSupervisor`, and `ArcSwap<PublishedNodeState>` atomic publisher.

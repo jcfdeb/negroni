@@ -54,6 +54,10 @@ pub trait DcsBackend: Send + Sync + 'static {
         status: &ClusterStatus,
         failsafe_roster: Option<&BTreeMap<CompactString, String>>,
     ) -> Result<(), DcsError>;
+    async fn append_history_entry(
+        &self,
+        entry: &negroni_types::HistoryEntry,
+    ) -> Result<(), DcsError>;
     async fn cas_sync_state(
         &self,
         next: &SyncState,
@@ -63,9 +67,7 @@ pub trait DcsBackend: Send + Sync + 'static {
         &self,
         config_json: &serde_json::Value,
         expected: Option<&CasToken>,
-    ) -> Result<CasToken, DcsError>
-    where
-        Self: Sized;
+    ) -> Result<CasToken, DcsError>;
     async fn cas_failover(
         &self,
         intent: &FailoverIntent,

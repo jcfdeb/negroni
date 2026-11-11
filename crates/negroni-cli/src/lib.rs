@@ -3,7 +3,11 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "negronictl", version, about = "Negroni / Patroni HA cluster control CLI")]
+#[command(
+    name = "negronictl",
+    version,
+    about = "Negroni / Patroni HA cluster control CLI"
+)]
 pub struct CliApp {
     /// Path to patroni.yml configuration file
     #[arg(short = 'c', long = "config-file", global = true)]
@@ -55,7 +59,11 @@ pub fn run_cli(args: Vec<String>) -> ExitCode {
     match parsed.command {
         CliCommand::Version => {
             let backends = negroni_dcs::compiled_backends().join(", ");
-            println!("negronictl {} (backends: [{}])", env!("CARGO_PKG_VERSION"), backends);
+            println!(
+                "negronictl {} (backends: [{}])",
+                env!("CARGO_PKG_VERSION"),
+                backends
+            );
             ExitCode::SUCCESS
         }
         CliCommand::List { cluster_name }

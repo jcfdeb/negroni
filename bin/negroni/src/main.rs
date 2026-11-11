@@ -10,7 +10,10 @@ enum ExecutionMode {
     Help,
 }
 
-fn detect_mode_from_args(mut args: Vec<String>, default_cfg_from_env: Option<String>) -> ExecutionMode {
+fn detect_mode_from_args(
+    mut args: Vec<String>,
+    default_cfg_from_env: Option<String>,
+) -> ExecutionMode {
     let bin_stem = args
         .first()
         .and_then(|a| Path::new(a).file_stem())
@@ -52,7 +55,11 @@ fn main() -> ExitCode {
     match detect_mode_from_args(env::args().collect(), env_cfg) {
         ExecutionMode::Version => {
             let backends = negroni_dcs::compiled_backends().join(", ");
-            println!("negroni {} (backends: [{}])", env!("CARGO_PKG_VERSION"), backends);
+            println!(
+                "negroni {} (backends: [{}])",
+                env!("CARGO_PKG_VERSION"),
+                backends
+            );
             ExitCode::SUCCESS
         }
         ExecutionMode::Help => {
@@ -116,11 +123,7 @@ mod tests {
 
     #[test]
     fn routes_ctl_subcommand_to_cli_mode() {
-        let args = vec![
-            "negroni".to_owned(),
-            "ctl".to_owned(),
-            "version".to_owned(),
-        ];
+        let args = vec!["negroni".to_owned(), "ctl".to_owned(), "version".to_owned()];
         assert_eq!(
             detect_mode_from_args(args, None),
             ExecutionMode::Cli {

@@ -1,3 +1,11 @@
+<div align="center">
+  <img src="img/pg_negroni.png" alt="Negroni Logo" width="300" />
+  <br><br>
+  <p><b>Deterministic, memory-safe 1:1 Rust implementation of Patroni for PostgreSQL 15–18 High Availability.</b></p>
+</div>
+
+---
+
 # Negroni
 
 **PostgreSQL High Availability, Distilled in Rust.**  
@@ -12,6 +20,8 @@
 
 > **Project Status:** Pre-v0.1 active development. Architecture (`HLD` & `LLD`) and simulation specifications are locked; Phase 0–1 workspace implementation is underway. See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for live progress.
 
+---
+> Status: **experimental**
 ---
 
 ## Why Negroni?

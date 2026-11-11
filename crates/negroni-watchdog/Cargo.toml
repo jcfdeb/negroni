@@ -15,5 +15,5 @@ systemd = []
 [dependencies]
 negroni-config.workspace = true
 negroni-types.workspace = true
+rustix.workspace = true
 thiserror.workspace = true
-tracing.workspace = true

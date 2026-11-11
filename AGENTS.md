@@ -20,10 +20,10 @@ Every agent and contributor MUST uphold these eight invariants without exception
    - NEVER import `tokio`, `std::net`, `std::process`, `std::fs`, or call `Instant::now()` / `SystemTime::now()` inside the reducer. Monotonic timestamps (`Instant`) MUST enter exclusively via `HaEvent` fields so Deterministic Simulation Testing (DST) controls virtual time.
 2. **Strict Async Cancellation Safety:**
    - Inside `tokio::select!`, ONLY poll cancel-safe channel receives (`mpsc::Receiver::recv`, `watch::Receiver::changed`) and timers (`tokio::time::Interval::tick`).
-   - NEVER place multi-step DCS transactions, SQL queries, HTTP calls, or subprocesses directly inside a `tokio::select!` branch. Emit `Effect` commands tagged with a monotonically increasing `op_epoch: u64`, and discard stale completions whenever `event.op_epoch < ctx.op_epoch`.
+   - NEVER place multi-step DCS transactions, SQL queries, HTTP calls, or subprocesses directly inside a `tokio::select!` branch. Tag short-lived per-tick RPC effects with `rpc_epoch: u64` and long-running lifecycle transitions/jobs with `state_epoch: u64`, discarding stale completions on epoch mismatch.
 3. **Hardware Watchdog Isolation (`negroni-watchdog`):**
-   - `/dev/watchdog` MUST be owned by a dedicated OS `std::thread` spawned *before* the Tokio runtime initializes.
-   - The watchdog thread MUST NEVER run async tasks, allocate unbounded heap memory, or perform network/disk I/O. It issues `WDIOC_KEEPALIVE` *only* while `Instant::now() + keepalive_cadence < proof.valid_until`, where `valid_until` is anchored to the **pre-flight** `Instant` recorded *before* the DCS lease renewal RPC left the host.
+   - `/dev/watchdog` MUST be owned by a dedicated OS `std::thread` spawned *before* the Tokio runtime initializes (`ioctl_linux.rs` is the workspace's sole `#![allow(unsafe_code)]` module).
+   - The watchdog thread MUST NEVER run async tasks, call `tracing` macros, allocate unbounded heap memory, or perform network/disk I/O. Read back the kernel-rounded timeout from `WDIOC_SETTIMEOUT` and verify `loop_wait + retry_timeout + 2s <= actual_timeout < ttl` (writing `'V'` immediately on mismatch), and issue `WDIOC_KEEPALIVE` *only* while `Instant::now() + keepalive_cadence < proof.valid_until` anchored to the **pre-flight** RPC timestamp.
    - NEVER disarm `/dev/watchdog` (writing magic byte `'V'`) during demotion until `negroni-pg` confirms PostgreSQL has exited or stopped accepting writes.
 4. **Single-Connection Local SQL Serialization (`negroni-pg`):**
    - NEVER use a connection pool (`deadpool`, `bb8`, `sqlx::Pool`) for local PostgreSQL control queries. External REST API probe storms must never exhaust `superuser_reserved_connections`.
@@ -66,7 +66,7 @@ Enforce a strict directed acyclic graph across workspace crates. Circular depend
 - **Zero OpenSSL / C Runtime Policy:** Must cross-compile cleanly to `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
   - TLS: `rustls` (`ring` or `aws-lc-rs` crypto provider behind clean feature flags) + `tokio-rustls` + `rustls-pemfile`.
   - Syscalls: `rustix` (`process::pidfd_open`, `process::pidfd_send_signal`, `ioctl`, `fs::fsync`).
-  - YAML: `saphyr` or `serde_norway` (NEVER use deprecated `serde_yaml` or unsound `serde_yml`).
+  - YAML: `saphyr` parsed into `serde_json::Value` for unified YAML + `PATRONI_*`/`NEGRONI_*` env + DCS `/config` merging (NEVER use `serde_norway`/`unsafe-libyaml`, deprecated `serde_yaml`, or unsound `serde_yml`).
   - Time & Timezones: `jiff` (for ISO-8601 scheduled switchovers/restarts and timezone validation; NEVER mutate environment variables at runtime, as `std::env::set_var` is `unsafe` in Rust 2024).
 - **Zero-Panic Daemon Hygiene:**
   - Enforce `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]` in every library crate outside `#[cfg(test)]`.

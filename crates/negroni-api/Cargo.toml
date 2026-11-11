@@ -12,3 +12,6 @@ workspace = true
 negroni-config.workspace = true
 negroni-ha.workspace = true
 negroni-types.workspace = true
+
+[dev-dependencies]
+compact_str.workspace = true

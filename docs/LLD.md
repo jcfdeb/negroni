@@ -51,7 +51,7 @@ rust-version = "1.85"
 license = "MIT"
 
 [workspace.lints.rust]
-unsafe_code = "deny" # Explicitly overridden only in negroni-watchdog ioctl wrapper if needed
+unsafe_code = "deny" # Overridden exclusively in crates/negroni-watchdog/src/ioctl_linux.rs
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
@@ -60,12 +60,12 @@ panic = "deny"
 
 [workspace.dependencies]
 anyhow = "1.0"
-arc-swap = "1.7"
+arc-swap = "1.9"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 comfy-table = "7.1"
-compact_str = { version = "0.8", features = ["serde"] }
+compact_str = { version = "0.10", features = ["serde"] }
 etcd-client = { version = "0.14", features = ["tls"] }
 ipnet = "2.10"
 jiff = { version = "0.2", features = ["serde"] }
@@ -74,9 +74,9 @@ kube = { version = "0.99", default-features = false, features = ["client", "runt
 openraft = { version = "0.9", features = ["serde"] }
 proptest = "1.6"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rustix = { version = "1.0", features = ["fs", "process", "ioctl"] }
+rustix = { version = "1.1", features = ["fs", "process"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-saphyr = "0.0.4"
+saphyr = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 similar = "2.7"
@@ -217,26 +217,27 @@ fn main() -> ExitCode {
 
 ## 2. `negroni-config` — Dual-Prefix Env Overlay & Timing Validator
 
-### 2.1 Environment Variable Mapping (`PATRONI_*` + `NEGRONI_*`)
-`negroni-config` supports every upstream `PATRONI_*` variable (`PATRONI_NAME`, `PATRONI_SCOPE`, `PATRONI_NAMESPACE`, `PATRONI_ETCD3_HOSTS`, `PATRONI_KUBERNETES_LABELS`, `PATRONI_POSTGRESQL_DATA_DIR`, `PATRONI_SUPERUSER_USERNAME`, `PATRONI_REPLICATION_PASSWORD`, `PATRONI_RESTAPI_LISTEN`, etc.) alongside identical `NEGRONI_*` aliases:
+### 2.1 `saphyr` -> `serde_json::Value` Pipeline & Dual-Prefix Env Overlay
+`negroni-config` parses `patroni.yml` via pure-Rust `saphyr` into a `serde_json::Value` document tree (`yaml_to_json_value`), eliminating any `unsafe` C `libyaml` dependencies while providing a single canonical JSON tree for layering `PATRONI_*` / `NEGRONI_*` environment overrides and dynamic DCS `/config` updates prior to `serde_json::from_value` schema decoding:
 
-1. Scan `std::env::vars()` once at startup / reload.
-2. Normalize keys starting with `PATRONI_` or `NEGRONI_` into canonical config paths.
+1. Parse `patroni.yml` via `saphyr::Yaml::load_from_str` and convert scalar/sequence/mapping nodes to `serde_json::Value` (accepting both YAML 1.2 strings such as `mode: off` and PyYAML/JSON booleans such as `mode: false`).
+2. Scan `std::env::vars()` once at startup / reload and normalize keys starting with `PATRONI_` or `NEGRONI_` into canonical config paths.
 3. If both `PATRONI_<SUFFIX>` and `NEGRONI_<SUFFIX>` exist with unequal values, apply `NEGRONI_<SUFFIX>` and emit a `tracing::warn!` diagnostic.
 
-### 2.2 Watchdog & Lease Timing Validator (`crates/negroni-config/src/timing.rs`)
+### 2.2 Watchdog & Lease Timing Validator (`crates/negroni-config/src/lib.rs`)
 
 ```rust
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WatchdogMode {
     Off,
+    #[default]
     Automatic,
     Required,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidatedTimings {
     pub ttl: Duration,
     pub loop_wait: Duration,
@@ -245,27 +246,20 @@ pub struct ValidatedTimings {
     pub safety_margin: Duration,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum TimingConfigError {
-    #[error("invalid HA timings: loop_wait ({loop_wait:?}) + 2 * retry_timeout ({retry_timeout:?}) must be <= ttl ({ttl:?})")]
-    LeaseRuleViolated { ttl: Duration, loop_wait: Duration, retry_timeout: Duration },
-    #[error("watchdog timeout ({wd_timeout:?}) leaves < 2s demotion budget after loop_wait ({loop_wait:?}) + retry_timeout ({retry_timeout:?})")]
-    InsufficientDemotionBudget { wd_timeout: Duration, loop_wait: Duration, retry_timeout: Duration },
-}
-
 pub fn validate_timings(
     ttl_secs: u64,
     loop_wait_secs: u64,
     retry_timeout_secs: u64,
     wd_mode: WatchdogMode,
-    safety_margin_cfg: i64, // Default 5; -1 means floor(ttl / 2)
-) -> Result<ValidatedTimings, TimingConfigError> {
-    let ttl = Duration::from_secs(ttl_secs.max(20));
+    safety_margin_cfg: i64, // Default 5; -1 means floor(ttl / 2); must be -1 or >= 1
+) -> Result<ValidatedTimings, ConfigError> {
+    let effective_ttl = ttl_secs.max(20);
+    let ttl = Duration::from_secs(effective_ttl);
     let loop_wait = Duration::from_secs(loop_wait_secs.max(1));
     let retry_timeout = Duration::from_secs(retry_timeout_secs.max(3));
 
     if loop_wait + (retry_timeout * 2) > ttl {
-        return Err(TimingConfigError::LeaseRuleViolated { ttl, loop_wait, retry_timeout });
+        return Err(ConfigError::LeaseRuleViolated { ttl, loop_wait, retry_timeout });
     }
 
     if wd_mode == WatchdogMode::Off {
@@ -279,15 +273,20 @@ pub fn validate_timings(
     }
 
     let wd_secs = if safety_margin_cfg == -1 {
-        ttl_secs / 2
+        effective_ttl / 2
+    } else if let Ok(margin) = u64::try_from(safety_margin_cfg)
+        && margin >= 1
+    {
+        effective_ttl.saturating_sub(margin)
     } else {
-        ttl_secs.saturating_sub(safety_margin_cfg.max(1) as u64)
+        return Err(ConfigError::InvalidSafetyMargin(safety_margin_cfg));
     };
+
     let wd_timeout = Duration::from_secs(wd_secs);
     let min_required = loop_wait + retry_timeout + Duration::from_secs(2);
 
     if wd_timeout < min_required {
-        return Err(TimingConfigError::InsufficientDemotionBudget {
+        return Err(ConfigError::InsufficientDemotionBudget {
             wd_timeout,
             loop_wait,
             retry_timeout,
@@ -375,14 +374,16 @@ pub struct MemberData {
 pub struct ClusterStatus {
     pub optime: WalLsn,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub slots: BTreeMap<CompactString, WalLsn>,
+    pub slots: BTreeMap<CompactString, Option<WalLsn>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retain_slots: Vec<CompactString>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncState {
     pub leader: Option<CompactString>,
     pub sync_standby: Option<String>, // Comma-separated member names (Patroni 1:1 wire format)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub quorum: u32,
 }
 
@@ -393,7 +394,16 @@ pub struct FailoverIntent {
     pub scheduled_at: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub timeline: u64,
+    pub lsn: WalLsn,
+    pub reason: String,
+    pub timestamp: Option<String>,
+    pub leader: Option<CompactString>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ClusterSnapshot {
     pub initialize: Option<Versioned<CompactString>>,
     pub config: Option<Versioned<serde_json::Value>>,
@@ -403,7 +413,7 @@ pub struct ClusterSnapshot {
     pub sync: Option<Versioned<SyncState>>,
     pub failover: Option<Versioned<FailoverIntent>>,
     pub failsafe: Option<BTreeMap<CompactString, String>>,
-    pub history: Vec<(u64, WalLsn, String, Option<String>)>,
+    pub history: Vec<HistoryEntry>,
 }
 ```
 
@@ -414,7 +424,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 use compact_str::CompactString;
 use negroni_types::{
-    CasToken, ClusterSnapshot, ClusterStatus, FailoverIntent, LeaseHandle, MemberData, SyncState,
+    CasToken, ClusterSnapshot, ClusterStatus, FailoverIntent, HistoryEntry, LeaseHandle,
+    MemberData, SyncState,
 };
 use tokio::sync::mpsc;
 
@@ -455,10 +466,7 @@ pub trait DcsBackend: Send + Sync + 'static {
         status: &ClusterStatus,
         failsafe_roster: Option<&BTreeMap<CompactString, String>>,
     ) -> Result<(), DcsError>;
-    async fn append_history_entry(
-        &self,
-        entry: (u64, negroni_types::WalLsn, String, String),
-    ) -> Result<(), DcsError>;
+    async fn append_history_entry(&self, entry: &HistoryEntry) -> Result<(), DcsError>;
     async fn cas_sync_state(&self, next: &SyncState, expected: Option<&CasToken>) -> Result<CasToken, DcsError>;
     async fn cas_config(&self, config_json: &serde_json::Value, expected: Option<&CasToken>) -> Result<CasToken, DcsError>;
     async fn cas_failover(&self, intent: &FailoverIntent, expected: Option<&CasToken>) -> Result<CasToken, DcsError>;
@@ -480,18 +488,31 @@ pub trait DcsBackend: Send + Sync + 'static {
 
 ### 4.1 Pure Deterministic Reducer (`crates/negroni-ha/src/reducer.rs`)
 
+**Epoch Fencing Invariant:** `NodeCtx` separates two monotonic counters so routine ticks never invalidate multi-minute background jobs or in-flight demotions:
+- `rpc_epoch: u64` — incremented on every per-tick DCS/peer RPC (`FetchDcs`, `RenewOrAcquireLeader`, `ProbeElectionPeers`, `ProbeFailsafePeers`) to discard late network responses.
+- `state_epoch: u64` — incremented *only* when entering/leaving a lifecycle state (`Bootstrapping`, `Cloning`, `ElectionCandidate`, `ArmingPrimary`, `Rewinding`, `Demoting`) or cancelling jobs.
+
 ```rust
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use compact_str::CompactString;
-use negroni_types::{CasToken, ClusterSnapshot, ClusterStatus, LeaseHandle, SyncState, WalLsn};
+use negroni_types::{
+    CasToken, ClusterSnapshot, ClusterStatus, LeaseHandle, LeaseProof, SyncState, WalLsn,
+};
 use smallvec::SmallVec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HaRoleState {
     Unbootstrapped,
-    Bootstrapping { op_epoch: u64 },
-    Cloning { leader_conn: String, op_epoch: u64 },
+    Bootstrapping { state_epoch: u64 },
+    Cloning { leader_conn: String, state_epoch: u64 },
+    ElectionCandidate { state_epoch: u64, peers_verified: bool },
+    ArmingPrimary {
+        state_epoch: u64,
+        leader_token: CasToken,
+        lease: LeaseHandle,
+        lease_valid_until: Instant,
+    },
     Primary {
         leader_token: CasToken,
         lease: LeaseHandle,
@@ -499,18 +520,19 @@ pub enum HaRoleState {
     },
     FailsafePrimary {
         lease_valid_until: Instant,
-        probe_epoch: u64,
     },
-    ElectionCandidate { op_epoch: u64 },
     Replica { following: Option<CompactString> },
     StandbyLeader {
         leader_token: CasToken,
         lease: LeaseHandle,
         lease_valid_until: Instant,
     },
-    Rewinding { target_leader_conn: String, op_epoch: u64 },
-    Demoting { reason: DemoteReason, deadline: Instant, op_epoch: u64 },
-    Paused { underlying_role: PausedRole },
+    Rewinding { target_leader_conn: String, state_epoch: u64 },
+    Demoting { reason: DemoteReason, deadline: Instant, state_epoch: u64 },
+    Paused {
+        underlying_role: PausedRole,
+        held_leader: Option<(LeaseHandle, CasToken)>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -526,12 +548,6 @@ pub enum PausedRole {
     Primary,
     Replica,
     Offline,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct LeaseProof {
-    pub epoch: u64,
-    pub valid_until: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -587,37 +603,50 @@ pub enum HaEvent {
     Tick { now: Instant },
     WatchWakeup { now: Instant },
     DcsFetched {
-        op_epoch: u64,
+        rpc_epoch: u64,
         attempt_started_at: Instant,
         now: Instant,
         result: Result<ClusterSnapshot, String>,
     },
+    ElectionPeersProbed {
+        rpc_epoch: u64,
+        now: Instant,
+        max_peer_lsn: WalLsn,
+    },
     LeaderLeaseResult {
-        op_epoch: u64,
+        rpc_epoch: u64,
         attempt_started_at: Instant,
         now: Instant,
         result: Result<(LeaseHandle, CasToken), String>,
     },
+    WatchdogArmed { state_epoch: u64, now: Instant },
+    WatchdogArmFailed { state_epoch: u64, now: Instant },
     FailsafeQuorumResult {
-        probe_epoch: u64,
+        rpc_epoch: u64,
         attempt_started_at: Instant,
         now: Instant,
         all_peers_accepted: bool,
     },
     PgObservation { now: Instant, telemetry: LocalPgSummary },
-    PgPromotionCompleted { op_epoch: u64, now: Instant, success: bool },
-    PgDemotionCompleted { op_epoch: u64, now: Instant },
-    BackgroundJobFinished { op_epoch: u64, now: Instant, job: JobKind, success: bool },
+    PgPromotionCompleted { state_epoch: u64, now: Instant, success: bool },
+    PgDemotionCompleted { state_epoch: u64, now: Instant },
+    BackgroundJobFinished { state_epoch: u64, now: Instant, job: JobKind, success: bool },
     OperatorCommand { now: Instant, cmd: ControlCommand },
 }
 
 #[derive(Debug)]
 pub enum Effect {
+    ArmAndFeedWatchdog { state_epoch: u64, proof: LeaseProof },
     FeedWatchdog(LeaseProof),
     DisarmWatchdog,
-    FetchDcs { op_epoch: u64, timeout: Duration },
+    FetchDcs { rpc_epoch: u64, timeout: Duration },
+    ProbeElectionPeers {
+        rpc_epoch: u64,
+        peers: Vec<(CompactString, String)>,
+        timeout: Duration,
+    },
     RenewOrAcquireLeader {
-        op_epoch: u64,
+        rpc_epoch: u64,
         lease: Option<LeaseHandle>,
         expected: Option<CasToken>,
         ttl: Duration,
@@ -625,12 +654,16 @@ pub enum Effect {
     ReleaseLeader { expected: CasToken },
     PublishLeaderStatus { status: ClusterStatus },
     UpdateSyncState { next: SyncState, expected: Option<CasToken> },
-    ProbeFailsafePeers { probe_epoch: u64, peers: Vec<(CompactString, String)>, timeout: Duration },
-    PromotePostgres { op_epoch: u64 },
-    DemotePostgres { op_epoch: u64, immediate_at: Instant },
+    ProbeFailsafePeers {
+        rpc_epoch: u64,
+        peers: Vec<(CompactString, String)>,
+        timeout: Duration,
+    },
+    PromotePostgres { state_epoch: u64 },
+    DemotePostgres { state_epoch: u64, immediate_at: Instant },
     ReconfigureStandby { primary_conninfo: String, slot_name: Option<CompactString> },
     SyncSlots { status: ClusterStatus, is_primary: bool, is_demoted_rejoin: bool },
-    SpawnJob { op_epoch: u64, job: JobKind, target_conn: Option<String> },
+    SpawnJob { state_epoch: u64, job: JobKind, target_conn: Option<String> },
     CancelActiveJobs,
     NotifySystemd(&'static str),
 }
@@ -638,7 +671,8 @@ pub enum Effect {
 pub struct NodeCtx {
     pub self_name: CompactString,
     pub state: HaRoleState,
-    pub op_epoch: u64,
+    pub rpc_epoch: u64,
+    pub state_epoch: u64,
     pub ttl: Duration,
     pub loop_wait: Duration,
     pub retry_timeout: Duration,
@@ -662,7 +696,10 @@ impl NodeCtx {
             HaEvent::Tick { now }
             | HaEvent::WatchWakeup { now }
             | HaEvent::DcsFetched { now, .. }
+            | HaEvent::ElectionPeersProbed { now, .. }
             | HaEvent::LeaderLeaseResult { now, .. }
+            | HaEvent::WatchdogArmed { now, .. }
+            | HaEvent::WatchdogArmFailed { now, .. }
             | HaEvent::FailsafeQuorumResult { now, .. }
             | HaEvent::PgObservation { now, .. }
             | HaEvent::PgPromotionCompleted { now, .. }
@@ -674,41 +711,51 @@ impl NodeCtx {
         match event {
             HaEvent::Tick { now } | HaEvent::WatchWakeup { now } => {
                 self.last_tick_at = now;
-                if !matches!(self.state, HaRoleState::Paused { .. }) {
-                    self.op_epoch += 1;
-                    effects.push(Effect::FetchDcs {
-                        op_epoch: self.op_epoch,
-                        timeout: self.retry_timeout,
-                    });
-                }
+                // Only `rpc_epoch` advances on ticks; long-running `state_epoch` jobs continue uninterrupted.
+                self.rpc_epoch += 1;
+                effects.push(Effect::FetchDcs {
+                    rpc_epoch: self.rpc_epoch,
+                    timeout: self.retry_timeout,
+                });
             }
 
             HaEvent::PgObservation { telemetry, .. } => {
                 self.last_pg = telemetry;
             }
 
-            HaEvent::DcsFetched { op_epoch, now, result, .. } => {
-                if op_epoch < self.op_epoch {
+            HaEvent::DcsFetched { rpc_epoch, now, result, .. } => {
+                if rpc_epoch < self.rpc_epoch {
                     return (effects, self.publish_snapshot(now));
                 }
+                if let Ok(ref snap) = result
+                    && let Some(ref fs_map) = snap.failsafe
+                {
+                    self.last_failsafe_roster = fs_map
+                        .iter()
+                        .filter(|(m, _)| *m != &self.self_name)
+                        .map(|(m, url)| (m.clone(), url.clone()))
+                        .collect();
+                }
+
                 match (&self.state, result) {
                     // 1. Bootstrap or Clone when node is uninitialized
                     (HaRoleState::Unbootstrapped, Ok(snap)) if !self.last_pg.has_valid_pgdata => {
-                        self.op_epoch += 1;
+                        self.state_epoch += 1;
+                        let s_epoch = self.state_epoch;
                         if snap.initialize.is_none() && snap.leader.is_none() && !self.nofailover_tag {
-                            self.state = HaRoleState::Bootstrapping { op_epoch: self.op_epoch };
+                            self.state = HaRoleState::Bootstrapping { state_epoch: s_epoch };
                             effects.push(Effect::SpawnJob {
-                                op_epoch: self.op_epoch,
+                                state_epoch: s_epoch,
                                 job: JobKind::InitDb,
                                 target_conn: None,
                             });
                         } else if let Some(source_conn) = Self::select_clone_source(&snap) {
                             self.state = HaRoleState::Cloning {
                                 leader_conn: source_conn.clone(),
-                                op_epoch: self.op_epoch,
+                                state_epoch: s_epoch,
                             };
                             effects.push(Effect::SpawnJob {
-                                op_epoch: self.op_epoch,
+                                state_epoch: s_epoch,
                                 job: JobKind::BaseBackup,
                                 target_conn: Some(source_conn),
                             });
@@ -717,31 +764,74 @@ impl NodeCtx {
 
                     // 2. Primary lost DCS connectivity -> Failsafe quorum probe or immediate demote
                     (HaRoleState::Primary { lease_valid_until, .. }, Err(_)) => {
-                        if self.failsafe_enabled && !self.last_failsafe_roster.is_empty() {
-                            self.op_epoch += 1;
-                            let probe_epoch = self.op_epoch;
+                        let valid_until = *lease_valid_until;
+                        if self.failsafe_enabled && !self.last_failsafe_roster.is_empty() && now < valid_until {
+                            self.state_epoch += 1;
+                            self.rpc_epoch += 1;
                             self.state = HaRoleState::FailsafePrimary {
-                                lease_valid_until: *lease_valid_until,
-                                probe_epoch,
+                                lease_valid_until: valid_until,
                             };
                             effects.push(Effect::ProbeFailsafePeers {
-                                probe_epoch,
+                                rpc_epoch: self.rpc_epoch,
                                 peers: self.last_failsafe_roster.clone(),
                                 timeout: self.retry_timeout,
                             });
                         } else {
-                            self.enter_demoting(DemoteReason::LeaseLost, *lease_valid_until, &mut effects);
+                            self.enter_demoting(DemoteReason::LeaseLost, valid_until, &mut effects);
                         }
                     }
 
-                    // 3. Primary sees DCS -> verify ownership & renew lease
+                    // 3. FailsafePrimary while DCS remains unreachable -> renew peer quorum every tick
+                    (HaRoleState::FailsafePrimary { lease_valid_until }, Err(_)) => {
+                        let valid_until = *lease_valid_until;
+                        if now >= valid_until || self.last_failsafe_roster.is_empty() {
+                            self.enter_demoting(DemoteReason::LeaseLost, valid_until, &mut effects);
+                        } else {
+                            self.rpc_epoch += 1;
+                            effects.push(Effect::ProbeFailsafePeers {
+                                rpc_epoch: self.rpc_epoch,
+                                peers: self.last_failsafe_roster.clone(),
+                                timeout: self.retry_timeout,
+                            });
+                        }
+                    }
+
+                    // 4. FailsafePrimary sees DCS recover -> reclaim `/leader` or demote on split-brain conflict
+                    (HaRoleState::FailsafePrimary { lease_valid_until }, Ok(snap)) => {
+                        let valid_until = *lease_valid_until;
+                        match &snap.leader {
+                            None => {
+                                self.rpc_epoch += 1;
+                                effects.push(Effect::RenewOrAcquireLeader {
+                                    rpc_epoch: self.rpc_epoch,
+                                    lease: None,
+                                    expected: None,
+                                    ttl: self.ttl,
+                                });
+                            }
+                            Some(ldr) if ldr.value == self.self_name => {
+                                self.rpc_epoch += 1;
+                                effects.push(Effect::RenewOrAcquireLeader {
+                                    rpc_epoch: self.rpc_epoch,
+                                    lease: None,
+                                    expected: Some(ldr.token.clone()),
+                                    ttl: self.ttl,
+                                });
+                            }
+                            Some(_) => {
+                                self.enter_demoting(DemoteReason::LeaseLost, valid_until, &mut effects);
+                            }
+                        }
+                    }
+
+                    // 5. Primary sees DCS -> verify ownership & renew lease
                     (HaRoleState::Primary { leader_token, lease, .. }, Ok(snap)) => {
                         if snap.leader.as_ref().map(|l| &l.value) != Some(&self.self_name) {
                             self.enter_demoting(DemoteReason::LeaseLost, now, &mut effects);
                         } else {
-                            self.op_epoch += 1;
+                            self.rpc_epoch += 1;
                             effects.push(Effect::RenewOrAcquireLeader {
-                                op_epoch: self.op_epoch,
+                                rpc_epoch: self.rpc_epoch,
                                 lease: Some(lease.clone()),
                                 expected: Some(leader_token.clone()),
                                 ttl: self.ttl,
@@ -749,49 +839,94 @@ impl NodeCtx {
                         }
                     }
 
-                    // 4. Replica sees timeline divergence -> run pg_rewind before streaming
+                    // 6. Paused Primary keeps `/leader` lock alive when DCS is reachable without auto-demoting
+                    (
+                        HaRoleState::Paused {
+                            underlying_role: PausedRole::Primary,
+                            held_leader,
+                        },
+                        Ok(snap),
+                    ) => {
+                        let uncontested = snap
+                            .leader
+                            .as_ref()
+                            .is_none_or(|l| l.value == self.self_name);
+                        if uncontested {
+                            self.rpc_epoch += 1;
+                            effects.push(Effect::RenewOrAcquireLeader {
+                                rpc_epoch: self.rpc_epoch,
+                                lease: held_leader.as_ref().map(|(l, _)| l.clone()),
+                                expected: snap
+                                    .leader
+                                    .as_ref()
+                                    .map(|l| l.token.clone())
+                                    .or_else(|| held_leader.as_ref().map(|(_, t)| t.clone())),
+                                ttl: self.ttl,
+                            });
+                        }
+                    }
+
+                    // 7. Replica sees timeline divergence -> run pg_rewind before streaming
                     (HaRoleState::Replica { .. }, Ok(snap)) if self.last_pg.needs_rewind => {
                         if let Some(leader_conn) = Self::leader_conn_url(&snap) {
-                            self.op_epoch += 1;
+                            self.state_epoch += 1;
+                            let s_epoch = self.state_epoch;
                             self.state = HaRoleState::Rewinding {
                                 target_leader_conn: leader_conn.clone(),
-                                op_epoch: self.op_epoch,
+                                state_epoch: s_epoch,
                             };
                             effects.push(Effect::SpawnJob {
-                                op_epoch: self.op_epoch,
+                                state_epoch: s_epoch,
                                 job: JobKind::PgRewind,
                                 target_conn: Some(leader_conn),
                             });
                         }
                     }
 
-                    // 5. Healthy Replica sees missing `/leader` -> check election eligibility
+                    // 8. Healthy Replica sees missing `/leader` -> poll peer LSNs (`is_healthiest_node`) before CAS
                     (HaRoleState::Replica { .. }, Ok(snap)) if snap.leader.is_none() => {
                         if self.is_eligible_for_election(&snap) {
-                            self.op_epoch += 1;
-                            self.state = HaRoleState::ElectionCandidate { op_epoch: self.op_epoch };
-                            effects.push(Effect::RenewOrAcquireLeader {
-                                op_epoch: self.op_epoch,
-                                lease: None,
-                                expected: None,
-                                ttl: self.ttl,
-                            });
+                            let peers = self.surviving_election_peers(&snap);
+                            self.state_epoch += 1;
+                            self.rpc_epoch += 1;
+                            if peers.is_empty() {
+                                self.state = HaRoleState::ElectionCandidate {
+                                    state_epoch: self.state_epoch,
+                                    peers_verified: true,
+                                };
+                                effects.push(Effect::RenewOrAcquireLeader {
+                                    rpc_epoch: self.rpc_epoch,
+                                    lease: None,
+                                    expected: None,
+                                    ttl: self.ttl,
+                                });
+                            } else {
+                                self.state = HaRoleState::ElectionCandidate {
+                                    state_epoch: self.state_epoch,
+                                    peers_verified: false,
+                                };
+                                effects.push(Effect::ProbeElectionPeers {
+                                    rpc_epoch: self.rpc_epoch,
+                                    peers,
+                                    timeout: self.retry_timeout,
+                                });
+                            }
                         }
                     }
 
-                    // 6. Replica follows active `/leader` & syncs slots
+                    // 9. Replica follows active `/leader` & syncs slots
                     (HaRoleState::Replica { following }, Ok(snap)) => {
                         if let Some(leader) = &snap.leader {
-                            if following.as_ref() != Some(&leader.value) {
-                                if let Some(conn) = Self::leader_conn_url(&snap) {
-                                    self.state = HaRoleState::Replica {
-                                        following: Some(leader.value.clone()),
-                                    };
-                                    effects.push(Effect::ReconfigureStandby {
-                                        primary_conninfo: conn,
-                                        slot_name: Some(self.self_name.clone()),
-                                    });
-                                }
+                            if following.as_ref() != Some(&leader.value)
+                                && let Some(conn) = Self::leader_conn_url(&snap)
+                            {
+                                self.state = HaRoleState::Replica {
+                                    following: Some(leader.value.clone()),
+                                };
+                                effects.push(Effect::ReconfigureStandby {
+                                    primary_conninfo: conn,
+                                    slot_name: Some(self.self_name.clone()),
+                                });
                             }
                             if let Some(status) = &snap.status {
                                 effects.push(Effect::SyncSlots {
@@ -806,59 +941,160 @@ impl NodeCtx {
                 }
             }
 
-            HaEvent::LeaderLeaseResult { op_epoch, attempt_started_at, now, result } => {
-                if op_epoch == self.op_epoch {
-                    match result {
-                        Ok((lease, token)) => {
-                            let valid_until = attempt_started_at + self.ttl - self.watchdog_safety_margin;
-                            let was_candidate = matches!(self.state, HaRoleState::ElectionCandidate { .. });
+            HaEvent::ElectionPeersProbed { rpc_epoch, max_peer_lsn, .. } => {
+                if rpc_epoch == self.rpc_epoch
+                    && let HaRoleState::ElectionCandidate {
+                        state_epoch,
+                        peers_verified: false,
+                    } = self.state
+                {
+                    if self.last_pg.lsn >= max_peer_lsn {
+                        self.state = HaRoleState::ElectionCandidate {
+                            state_epoch,
+                            peers_verified: true,
+                        };
+                        self.rpc_epoch += 1;
+                        effects.push(Effect::RenewOrAcquireLeader {
+                            rpc_epoch: self.rpc_epoch,
+                            lease: None,
+                            expected: None,
+                            ttl: self.ttl,
+                        });
+                    } else {
+                        // Yield election to the surviving peer with strictly higher WAL LSN.
+                        self.state = HaRoleState::Replica { following: None };
+                    }
+                }
+            }
 
+            HaEvent::LeaderLeaseResult { rpc_epoch, attempt_started_at, now, result } => {
+                if rpc_epoch == self.rpc_epoch {
+                    let valid_until = attempt_started_at + self.ttl - self.watchdog_safety_margin;
+                    match (&self.state, result) {
+                        // Paused Primary refreshed DCS `/leader` lock (watchdog stays disarmed)
+                        (
+                            HaRoleState::Paused {
+                                underlying_role: PausedRole::Primary,
+                                ..
+                            },
+                            Ok((lease, token)),
+                        ) => {
+                            self.state = HaRoleState::Paused {
+                                underlying_role: PausedRole::Primary,
+                                held_leader: Some((lease, token)),
+                            };
+                        }
+                        (HaRoleState::Paused { .. }, Err(_)) => {}
+
+                        // Candidate won `/leader`: arm `/dev/watchdog` BEFORE promoting PostgreSQL!
+                        (HaRoleState::ElectionCandidate { .. }, Ok((lease, token))) => {
+                            self.state_epoch += 1;
+                            let s_epoch = self.state_epoch;
+                            self.state = HaRoleState::ArmingPrimary {
+                                state_epoch: s_epoch,
+                                leader_token: token,
+                                lease,
+                                lease_valid_until: valid_until,
+                            };
+                            effects.push(Effect::ArmAndFeedWatchdog {
+                                state_epoch: s_epoch,
+                                proof: LeaseProof {
+                                    epoch: s_epoch,
+                                    valid_until,
+                                },
+                            });
+                        }
+
+                        // Existing Primary or recovering FailsafePrimary renewed `/leader`
+                        (
+                            HaRoleState::Primary { .. } | HaRoleState::FailsafePrimary { .. },
+                            Ok((lease, token)),
+                        ) => {
+                            self.state_epoch += 1;
                             self.state = HaRoleState::Primary {
                                 leader_token: token,
                                 lease,
                                 lease_valid_until: valid_until,
                             };
                             effects.push(Effect::FeedWatchdog(LeaseProof {
-                                epoch: self.op_epoch,
+                                epoch: self.state_epoch,
                                 valid_until,
                             }));
-                            if was_candidate {
-                                effects.push(Effect::PromotePostgres { op_epoch: self.op_epoch });
-                                effects.push(Effect::NotifySystemd("STATUS=Running as primary"));
-                            }
                         }
-                        Err(_) if matches!(self.state, HaRoleState::Primary { .. }) => {
+
+                        (
+                            HaRoleState::Primary { .. } | HaRoleState::FailsafePrimary { .. },
+                            Err(_),
+                        ) => {
                             self.enter_demoting(DemoteReason::LeaseLost, now, &mut effects);
                         }
-                        Err(_) => {
+                        (_, Err(_)) => {
                             self.state = HaRoleState::Replica { following: None };
                         }
+                        _ => {}
                     }
                 }
             }
 
-            HaEvent::FailsafeQuorumResult { probe_epoch, attempt_started_at, all_peers_accepted, .. } => {
-                if let HaRoleState::FailsafePrimary { lease_valid_until, probe_epoch: expected } = self.state {
-                    if probe_epoch == expected {
-                        if all_peers_accepted {
-                            let extended = attempt_started_at + self.ttl - self.watchdog_safety_margin;
-                            self.state = HaRoleState::FailsafePrimary {
-                                lease_valid_until: extended,
-                                probe_epoch,
-                            };
-                            effects.push(Effect::FeedWatchdog(LeaseProof {
-                                epoch: probe_epoch,
-                                valid_until: extended,
-                            }));
-                        } else {
-                            self.enter_demoting(DemoteReason::FailsafeRejected, lease_valid_until, &mut effects);
-                        }
+            HaEvent::WatchdogArmed { state_epoch, .. } => {
+                if let HaRoleState::ArmingPrimary {
+                    state_epoch: expected,
+                    ref leader_token,
+                    ref lease,
+                    lease_valid_until,
+                } = self.state
+                    && state_epoch == expected
+                {
+                    let tok = leader_token.clone();
+                    let lse = lease.clone();
+                    self.state = HaRoleState::Primary {
+                        leader_token: tok,
+                        lease: lse,
+                        lease_valid_until,
+                    };
+                    if self.last_pg.in_recovery {
+                        effects.push(Effect::PromotePostgres { state_epoch });
+                    }
+                    effects.push(Effect::NotifySystemd("STATUS=Running as primary"));
+                }
+            }
+
+            HaEvent::WatchdogArmFailed { state_epoch, now } => {
+                if let HaRoleState::ArmingPrimary {
+                    state_epoch: expected,
+                    ref leader_token,
+                    ..
+                } = self.state
+                    && state_epoch == expected
+                {
+                    let tok = leader_token.clone();
+                    effects.push(Effect::ReleaseLeader { expected: tok });
+                    self.enter_demoting(DemoteReason::WatchdogArmFailed, now, &mut effects);
+                }
+            }
+
+            HaEvent::FailsafeQuorumResult { rpc_epoch, attempt_started_at, all_peers_accepted, .. } => {
+                if rpc_epoch == self.rpc_epoch
+                    && let HaRoleState::FailsafePrimary { lease_valid_until } = self.state
+                {
+                    if all_peers_accepted {
+                        self.state_epoch += 1;
+                        let extended = attempt_started_at + self.ttl - self.watchdog_safety_margin;
+                        self.state = HaRoleState::FailsafePrimary {
+                            lease_valid_until: extended,
+                        };
+                        effects.push(Effect::FeedWatchdog(LeaseProof {
+                            epoch: self.state_epoch,
+                            valid_until: extended,
+                        }));
+                    } else {
+                        self.enter_demoting(DemoteReason::FailsafeRejected, lease_valid_until, &mut effects);
                     }
                 }
             }
 
-            HaEvent::PgDemotionCompleted { op_epoch, .. } => {
-                if matches!(self.state, HaRoleState::Demoting { op_epoch: e, .. } if e == op_epoch) {
+            HaEvent::PgDemotionCompleted { state_epoch, .. } => {
+                if matches!(self.state, HaRoleState::Demoting { state_epoch: e, .. } if e == state_epoch) {
                     // Hardware watchdog disarmed ONLY after Postgres is shut down / read-only
                     effects.push(Effect::DisarmWatchdog);
                     effects.push(Effect::SyncSlots {
@@ -870,40 +1106,86 @@ impl NodeCtx {
                 }
             }
 
-            HaEvent::BackgroundJobFinished { op_epoch, job, success, .. } if op_epoch == self.op_epoch => {
-                match (job, success) {
-                    (JobKind::InitDb | JobKind::CustomBootstrap, true) => {
-                        self.op_epoch += 1;
-                        self.state = HaRoleState::ElectionCandidate { op_epoch: self.op_epoch };
-                        effects.push(Effect::RenewOrAcquireLeader {
-                            op_epoch: self.op_epoch,
-                            lease: None,
-                            expected: None,
-                            ttl: self.ttl,
-                        });
-                    }
-                    (JobKind::BaseBackup | JobKind::PgRewind, true) => {
-                        self.state = HaRoleState::Replica { following: None };
-                    }
-                    _ => {
-                        self.state = HaRoleState::Unbootstrapped;
+            HaEvent::BackgroundJobFinished { state_epoch, job, success, .. } => {
+                let matches_active_job = matches!(
+                    self.state,
+                    HaRoleState::Bootstrapping { state_epoch: e }
+                    | HaRoleState::Cloning { state_epoch: e, .. }
+                    | HaRoleState::Rewinding { state_epoch: e, .. }
+                    if e == state_epoch
+                );
+                if matches_active_job {
+                    match (job, success) {
+                        (JobKind::InitDb | JobKind::CustomBootstrap, true) => {
+                            self.state_epoch += 1;
+                            self.rpc_epoch += 1;
+                            self.state = HaRoleState::ElectionCandidate {
+                                state_epoch: self.state_epoch,
+                                peers_verified: true,
+                            };
+                            effects.push(Effect::RenewOrAcquireLeader {
+                                rpc_epoch: self.rpc_epoch,
+                                lease: None,
+                                expected: None,
+                                ttl: self.ttl,
+                            });
+                        }
+                        (JobKind::BaseBackup | JobKind::PgRewind, true) => {
+                            self.state = HaRoleState::Replica { following: None };
+                        }
+                        _ => {
+                            self.state = HaRoleState::Unbootstrapped;
+                        }
                     }
                 }
             }
 
             HaEvent::OperatorCommand { cmd: ControlCommand::Pause, .. } => {
-                let underlying = match self.state {
-                    HaRoleState::Primary { .. } | HaRoleState::FailsafePrimary { .. } => PausedRole::Primary,
-                    HaRoleState::Replica { .. } => PausedRole::Replica,
-                    _ => PausedRole::Offline,
+                let (underlying, held_leader) = match &self.state {
+                    HaRoleState::Primary { leader_token, lease, .. }
+                    | HaRoleState::ArmingPrimary { leader_token, lease, .. } => {
+                        (PausedRole::Primary, Some((lease.clone(), leader_token.clone())))
+                    }
+                    HaRoleState::FailsafePrimary { .. } => (PausedRole::Primary, None),
+                    HaRoleState::Replica { .. } => (PausedRole::Replica, None),
+                    _ => (PausedRole::Offline, None),
                 };
                 effects.push(Effect::DisarmWatchdog);
-                self.state = HaRoleState::Paused { underlying_role: underlying };
+                self.state = HaRoleState::Paused {
+                    underlying_role: underlying,
+                    held_leader,
+                };
             }
 
             HaEvent::OperatorCommand { cmd: ControlCommand::Resume, .. } => {
-                if matches!(self.state, HaRoleState::Paused { .. }) {
-                    self.state = HaRoleState::Replica { following: None };
+                if let HaRoleState::Paused {
+                    underlying_role,
+                    ref held_leader,
+                } = self.state
+                {
+                    match underlying_role {
+                        PausedRole::Primary if !self.last_pg.in_recovery => {
+                            let saved = held_leader.clone();
+                            self.state_epoch += 1;
+                            self.rpc_epoch += 1;
+                            self.state = HaRoleState::ElectionCandidate {
+                                state_epoch: self.state_epoch,
+                                peers_verified: true,
+                            };
+                            effects.push(Effect::RenewOrAcquireLeader {
+                                rpc_epoch: self.rpc_epoch,
+                                lease: saved.as_ref().map(|(l, _)| l.clone()),
+                                expected: saved.map(|(_, t)| t),
+                                ttl: self.ttl,
+                            });
+                        }
+                        PausedRole::Primary | PausedRole::Replica => {
+                            self.state = HaRoleState::Replica { following: None };
+                        }
+                        PausedRole::Offline => {
+                            self.state = HaRoleState::Unbootstrapped;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -914,18 +1196,18 @@ impl NodeCtx {
     }
 
     fn enter_demoting(&mut self, reason: DemoteReason, deadline: Instant, effects: &mut SmallVec<[Effect; 6]>) {
-        self.op_epoch += 1;
+        self.state_epoch += 1;
         let immediate_at = deadline
             .checked_sub(Duration::from_secs(2))
             .unwrap_or(deadline);
         self.state = HaRoleState::Demoting {
             reason,
             deadline,
-            op_epoch: self.op_epoch,
+            state_epoch: self.state_epoch,
         };
         effects.push(Effect::CancelActiveJobs);
         effects.push(Effect::DemotePostgres {
-            op_epoch: self.op_epoch,
+            state_epoch: self.state_epoch,
             immediate_at,
         });
     }
@@ -934,20 +1216,33 @@ impl NodeCtx {
         if self.nofailover_tag || self.last_pg.lag_bytes > self.maximum_lag_on_failover {
             return false;
         }
-        if self.synchronous_mode {
-            if let Some(sync) = &snap.sync {
-                let allowed = sync
-                    .value
-                    .sync_standby
-                    .as_deref()
-                    .map(|csv| csv.split(',').any(|m| m.trim() == self.self_name.as_str()))
-                    .unwrap_or(false);
-                if !allowed {
-                    return false;
-                }
+        if let Some(status) = &snap.status {
+            let dcs_lag = status.value.optime.0.saturating_sub(self.last_pg.lsn.0);
+            if dcs_lag > self.maximum_lag_on_failover {
+                return false;
+            }
+        }
+        if self.synchronous_mode
+            && let Some(sync) = &snap.sync
+        {
+            let allowed = sync
+                .value
+                .sync_standby
+                .as_deref()
+                .is_some_and(|csv| csv.split(',').any(|m| m.trim() == self.self_name.as_str()));
+            if !allowed {
+                return false;
             }
         }
         true
+    }
+
+    fn surviving_election_peers(&self, snap: &ClusterSnapshot) -> Vec<(CompactString, String)> {
+        snap.members
+            .iter()
+            .filter(|(name, _)| *name != &self.self_name)
+            .map(|(name, m)| (name.clone(), m.value.api_url.clone()))
+            .collect()
     }
 
     fn leader_conn_url(snap: &ClusterSnapshot) -> Option<String> {
@@ -973,14 +1268,19 @@ impl NodeCtx {
     fn publish_snapshot(&self, now: Instant) -> PublishedNodeState {
         let (role, is_rw) = match &self.state {
             HaRoleState::Primary { lease_valid_until, .. }
-            | HaRoleState::FailsafePrimary { lease_valid_until, .. } => {
+            | HaRoleState::FailsafePrimary { lease_valid_until } => {
                 ("primary".into(), now < *lease_valid_until)
             }
-            HaRoleState::Paused { underlying_role: PausedRole::Primary } => ("primary".into(), true),
+            HaRoleState::Paused {
+                underlying_role: PausedRole::Primary,
+                ..
+            } => ("primary".into(), true),
             HaRoleState::StandbyLeader { .. } => ("standby_leader".into(), false),
-            HaRoleState::Replica { .. } | HaRoleState::Paused { underlying_role: PausedRole::Replica } => {
-                ("replica".into(), false)
-            }
+            HaRoleState::Replica { .. }
+            | HaRoleState::Paused {
+                underlying_role: PausedRole::Replica,
+                ..
+            } => ("replica".into(), false),
             _ => ("uninitialized".into(), false),
         };
 
@@ -1040,137 +1340,21 @@ pub async fn coordinator_loop(
 }
 ```
 
-```rust
-// crates/negroni-watchdog/src/thread.rs
-use std::fs::File;
-use std::io::Write;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::time::{Duration, Instant};
-
-pub enum WatchdogCmd {
-    Keepalive { epoch: u64, valid_until: Instant },
-    Disarm,
-    Shutdown,
-}
-
-/// Runs on a dedicated OS `std::thread` spawned before Tokio starts.
-/// Linux `/dev/watchdog` ioctl constants: `WDIOC_SETTIMEOUT = 0xC0045706`, `WDIOC_KEEPALIVE = 0x80045705`.
-pub fn watchdog_thread_main(device_path: String, hw_timeout_secs: i32, rx: Receiver<WatchdogCmd>) {
-    let mut active_dev: Option<(File, u64, Instant)> = None;
-    let cadence = Duration::from_secs(1);
-
-    loop {
-        match rx.recv_timeout(cadence) {
-            Ok(WatchdogCmd::Keepalive { epoch, valid_until }) => {
-                if active_dev.is_none() {
-                    if let Ok(file) = arm_watchdog_device(&device_path, hw_timeout_secs) {
-                        active_dev = Some((file, epoch, valid_until));
-                    }
-                }
-                if let Some((ref file, ref mut cur_epoch, ref mut cur_deadline)) = active_dev {
-                    if epoch >= *cur_epoch && Instant::now() < valid_until {
-                        *cur_epoch = epoch;
-                        *cur_deadline = valid_until;
-                        let _ = send_wdioc_keepalive(file);
-                    }
-                }
-            }
-            Ok(WatchdogCmd::Disarm) => {
-                if let Some((mut file, _, _)) = active_dev.take() {
-                    let _ = file.write_all(b"V");
-                }
-            }
-            Ok(WatchdogCmd::Shutdown) => break,
-            Err(RecvTimeoutError::Timeout) => {
-                if let Some((ref file, _, valid_until)) = active_dev {
-                    if Instant::now() + cadence < valid_until {
-                        let _ = send_wdioc_keepalive(file);
-                    }
-                }
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-}
-```
+**Hardware Watchdog Isolation & Kernel Granularity Readback (`crates/negroni-watchdog`):**
+- `ioctl_linux.rs` carries the workspace's sole `#![allow(unsafe_code)]` attribute, wrapping `WDIOC_SETTIMEOUT` (`rustix::ioctl::Updater`) and `WDIOC_KEEPALIVE` (`rustix::ioctl::Getter`) via architecture-portable `rustix::ioctl::opcode` helpers.
+- Because hardware drivers may round `WDIOC_SETTIMEOUT` to coarse timer steps (e.g., snapping `25s` -> `32s` or `16s`), `validate_and_arm` inspects the kernel-returned `actual_timeout` and verifies `loop_wait + retry_timeout + 2s <= actual_timeout < ttl`. If the driver rounds outside that window, `validate_and_arm` immediately writes magic `'V'` (`b"V"`) before closing `/dev/watchdog` (preventing an unintended reboot) and returns `Err(WatchdogArmError::InvalidKernelGranularity)`—aborting promotion when `WatchdogMode::Required` is active while degrading safely to software-only when `WatchdogMode::Automatic` is configured.
+- `thread.rs` executes on the pre-Tokio `negroni-wd` `std::thread` with **zero `tracing` / logging sink dependencies** so stalled `stderr`/journald pipes can never block hardware keepalives.
 
 ---
 
 ## 5. `negroni-pg` — PostgreSQL 15–18 Supervisor & Dual-Mode Slot Manager
 
-### 5.1 Static Version Capabilities & Prometheus Process State (`crates/negroni-pg/src/version.rs`)
+### 5.1 Static Version Capabilities (`negroni-types`) & Prometheus Process State (`crates/negroni-pg`)
+
+`PgMajor` (`V15..=V18`), `PgCapabilities`, and `UnsupportedPgVersion` are defined in `negroni-types` so both `negroni-config` and `negroni-pg` share the capability matrix without upward dependencies, while `PgProcessState` lives in `negroni-pg`:
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PgMajor {
-    V15 = 15,
-    V16 = 16,
-    V17 = 17,
-    V18 = 18,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PgCapabilities {
-    pub hba_include_and_regex: bool,       // PG 16+: include/include_dir & /regex/ in pg_hba/pg_ident
-    pub standby_logical_slot_create: bool, // PG 16+: logical slot creation on hot standbys
-    pub native_failover_slots: bool,       // PG 17+: pg_replication_slots.{failover, synced} + slotsync
-    pub split_stat_checkpointer: bool,     // PG 17+: pg_stat_checkpointer separated from pg_stat_bgwriter
-    pub default_initdb_checksums: bool,    // PG 18+: initdb enables data checksums by default
-    pub hba_oauth_and_aio: bool,           // PG 18+: oauth auth method, io_method GUC, slotsync_skip_reason
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("unsupported PostgreSQL major version {0}; Negroni supports PostgreSQL 15 through 18")]
-pub struct UnsupportedPgVersion(pub i32);
-
-impl PgMajor {
-    pub fn from_version_num(version_num: i32) -> Result<Self, UnsupportedPgVersion> {
-        match version_num / 10_000 {
-            15 => Ok(Self::V15),
-            16 => Ok(Self::V16),
-            17 => Ok(Self::V17),
-            18 => Ok(Self::V18),
-            other => Err(UnsupportedPgVersion(other)),
-        }
-    }
-
-    pub const fn capabilities(self) -> PgCapabilities {
-        match self {
-            Self::V15 => PgCapabilities {
-                hba_include_and_regex: false,
-                standby_logical_slot_create: false,
-                native_failover_slots: false,
-                split_stat_checkpointer: false,
-                default_initdb_checksums: false,
-                hba_oauth_and_aio: false,
-            },
-            Self::V16 => PgCapabilities {
-                hba_include_and_regex: true,
-                standby_logical_slot_create: true,
-                native_failover_slots: false,
-                split_stat_checkpointer: false,
-                default_initdb_checksums: false,
-                hba_oauth_and_aio: false,
-            },
-            Self::V17 => PgCapabilities {
-                hba_include_and_regex: true,
-                standby_logical_slot_create: true,
-                native_failover_slots: true,
-                split_stat_checkpointer: true,
-                default_initdb_checksums: false,
-                hba_oauth_and_aio: false,
-            },
-            Self::V18 => PgCapabilities {
-                hba_include_and_regex: true,
-                standby_logical_slot_create: true,
-                native_failover_slots: true,
-                split_stat_checkpointer: true,
-                default_initdb_checksums: true,
-                hba_oauth_and_aio: true,
-            },
-        }
-    }
-}
+use negroni_types::{PgCapabilities, PgMajor, UnsupportedPgVersion};
 
 /// Exact integer mapping for Prometheus `patroni_postgres_state` (0..=14)
 #[repr(u8)]
