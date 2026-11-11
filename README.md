@@ -14,7 +14,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust: 1.85+ (2024 Edition)](https://img.shields.io/badge/rust-1.85%2B%20(2024)-orange.svg)](https://www.rust-lang.org/)
 [![PostgreSQL: 15–18](https://img.shields.io/badge/PostgreSQL-15--18-336791.svg)](https://www.postgresql.org/)
-[![CI](https://github.com/<owner>/negroni/actions/workflows/ci.yml/badge.svg)](https://github.com/<owner>/negroni/actions/workflows/ci.yml)
+[![CI](https://github.com/jcfdeb/negroni/actions/workflows/ci.yml/badge.svg)](https://github.com/jcfdeb/negroni/actions/workflows/ci.yml)
 
 **Negroni** is a deterministic, memory-safe, **1:1 wire-compatible Rust implementation of [Patroni 4.1+](https://github.com/patroni/patroni)** scoped to **PostgreSQL 15 through 18** (and Citus 12+). It compiles into a single static multicall Linux/POSIX binary (`negroni`) that also serves as `patronictl` and `negronictl`.
 
@@ -113,7 +113,7 @@ negronictl -c /etc/patroni/patroni.yml switchover
 Requires Rust **1.85+** (`2024` edition):
 
 ```bash
-git clone [https://github.com/](https://github.com/)<owner>/negroni.git
+git clone https://github.com/jcfdeb/negroni.git
 cd negroni
 
 # Standard release build (etcd3, Kubernetes, Consul, ZooKeeper, OpenRaft, Citus, systemd)
