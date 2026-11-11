@@ -1,0 +1,49 @@
+[package]
+name = "negroni"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = [
+    "dcs-etcd3",
+    "dcs-kube",
+    "dcs-consul",
+    "dcs-zookeeper",
+    "dcs-raft",
+    "citus",
+    "systemd",
+]
+
+# Tier-1 Modern DCS Backends
+dcs-etcd3 = ["negroni-dcs/etcd3"]
+dcs-kube = ["negroni-dcs/kube"]
+dcs-consul = ["negroni-dcs/consul"]
+dcs-zookeeper = ["negroni-dcs/zookeeper"]
+dcs-raft = ["negroni-dcs/raft"]
+
+# Legacy Opt-In DCS Hooks
+legacy-dcs = ["dcs-etcd2", "dcs-exhibitor"]
+dcs-etcd2 = ["negroni-dcs/etcd2"]
+dcs-exhibitor = ["negroni-dcs/exhibitor"]
+
+# Optional Platform Integrations
+citus = ["negroni-pg/citus"]
+systemd = ["negroni-watchdog/systemd"]
+aws-callbacks = ["negroni-ha/aws-callbacks"]
+
+[dependencies]
+negroni-api.workspace = true
+negroni-cli.workspace = true
+negroni-config.workspace = true
+negroni-dcs.workspace = true
+negroni-ha.workspace = true
+negroni-pg.workspace = true
+negroni-types.workspace = true
+negroni-watchdog.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
