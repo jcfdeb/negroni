@@ -1,0 +1,18 @@
+[package]
+name = "negroni-pg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+citus = []
+
+[dependencies]
+negroni-config.workspace = true
+negroni-types.workspace = true
+thiserror.workspace = true
