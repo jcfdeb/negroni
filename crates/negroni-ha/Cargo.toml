@@ -1,0 +1,25 @@
+[package]
+name = "negroni-ha"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+aws-callbacks = []
+
+[dependencies]
+arc-swap.workspace = true
+compact_str.workspace = true
+negroni-config.workspace = true
+negroni-dcs.workspace = true
+negroni-pg.workspace = true
+negroni-types.workspace = true
+negroni-watchdog.workspace = true
+smallvec.workspace = true
+tokio.workspace = true
+tracing.workspace = true
