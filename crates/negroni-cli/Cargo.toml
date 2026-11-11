@@ -1,0 +1,15 @@
+[package]
+name = "negroni-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+negroni-config.workspace = true
+negroni-dcs.workspace = true
+negroni-types.workspace = true
