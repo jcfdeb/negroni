@@ -1,0 +1,19 @@
+[package]
+name = "negroni-watchdog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+systemd = []
+
+[dependencies]
+negroni-config.workspace = true
+negroni-types.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
