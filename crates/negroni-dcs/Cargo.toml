@@ -10,8 +10,18 @@ workspace = true
 
 [features]
 default = []
-etcd3 = []
-kube = []
+etcd3 = ["dep:http", "dep:prost", "dep:tokio-stream", "dep:tonic"]
+kube = [
+    "dep:base64",
+    "dep:futures-util",
+    "dep:jiff",
+    "dep:k8s-openapi",
+    "dep:kube-core",
+    "dep:reqwest",
+    "dep:rustls",
+    "dep:saphyr",
+    "dep:serde",
+]
 consul = []
 zookeeper = []
 raft = []
@@ -19,8 +29,27 @@ etcd2 = []
 exhibitor = []
 
 [dependencies]
+base64 = { workspace = true, optional = true }
 compact_str.workspace = true
+futures-util = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
+kube-core = { workspace = true, optional = true }
+negroni-config.workspace = true
 negroni-types.workspace = true
+prost = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+saphyr = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-stream = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
+tracing.workspace = true
+
+[dev-dependencies]
+tonic = { workspace = true, features = ["server"] }
+tower.workspace = true

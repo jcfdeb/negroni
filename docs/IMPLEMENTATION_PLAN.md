@@ -57,18 +57,18 @@ Every task below maps directly to `docs/HLD.md` and `docs/LLD.md`. Complete phas
 
 ## Phase 3: Tier-1 DCS Drivers, REST API & CLI (Production MVP)
 
-- [ ] **3.1 `etcd` v3 Backend (`negroni-dcs::etcd3`)**
+- [x] **3.1 `etcd` v3 Backend (`negroni-dcs::etcd3`)**
   - **Files:** `crates/negroni-dcs/src/etcd3.rs`.
-  - **Deliverable:** `etcd-client` transactional CAS (`Txn`), lease keepalive task, atomic prefix snapshot reader, and resilient watch stream.
-- [ ] **3.2 Kubernetes Backend (`negroni-dcs::kube`)**
+  - **Deliverable:** Pure-Rust `tonic` + `prost` HTTP/2 gRPC transactional CAS (`Txn`), background lease keepalive task, atomic prefix snapshot reader, `DeleteRange`, TLS/mTLS + `Authenticate` token support, and resilient watch stream (zero `protoc` build dependency).
+- [x] **3.2 Kubernetes Backend (`negroni-dcs::kube`)**
   - **Files:** `crates/negroni-dcs/src/kube.rs`.
-  - **Deliverable:** `kube-rs` watcher and `resourceVersion` CAS supporting both `Endpoints` (with active primary Pod subset sync) and `Lease` modes plus `<scope>-config` `ConfigMap`.
-- [ ] **3.3 Lock-Free REST API, Guarded Control Plane & Prometheus Exporter (`negroni-api`)**
+  - **Deliverable:** `kube-core` + `k8s-openapi` + `saphyr` streaming NDJSON watcher and `resourceVersion` CAS supporting both `Endpoints` (with active primary Pod subset sync) and `coordination.k8s.io/v1::Lease` modes plus `<scope>-config` `ConfigMap`.
+- [x] **3.3 Lock-Free REST API, Guarded Control Plane & Prometheus Exporter (`negroni-api`)**
   - **Files:** `crates/negroni-api/src/{lib.rs, probes.rs, control.rs, auth.rs, metrics.rs}`.
   - **Deliverable:** `axum` + `rustls` server, zero-lock `ArcSwap` `GET`/`HEAD`/`OPTIONS` probes, `AuthAndAllowlistLayer` (constant-time Basic Auth + CIDR/peer IP allowlist + mTLS), all mutating endpoints, `POST /failsafe`, and Prometheus `/metrics`.
-- [ ] **3.4 Full 19-Command `negronictl` / `patronictl` CLI (`negroni-cli`)**
+- [x] **3.4 Full 19-Command `negronictl` / `patronictl` CLI (`negroni-cli`)**
   - **Files:** `crates/negroni-cli/src/{lib.rs, list.rs, edit_config.rs, switchover.rs, query.rs}`.
-  - **Deliverable:** Complete `clap` CLI, `PrettyTable`-identical ASCII/JSON/YAML/TSV tables, `topology` cascade tree, interactive switchover/failover prompts, and `edit-config` (`$EDITOR` + `similar` diff + CAS commit).
+  - **Deliverable:** Complete `clap` CLI, `PrettyTable`-identical ASCII/UTF-8/JSON/YAML/TSV tables, `topology` cascade tree, interactive switchover/failover prompts, `query` (`tokio-postgres` + `rustls`), and `edit-config` (`$EDITOR` + `similar` diff + CAS commit).
 
 ---
 

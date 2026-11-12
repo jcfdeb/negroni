@@ -667,6 +667,7 @@ bootstrap:
                 .has_valid_pgdata
                 .then(|| CompactString::const_new("7400000000000000001")),
             slots: BTreeMap::new(),
+            ..LocalPgSummary::default()
         }
     }
 

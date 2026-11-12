@@ -20,8 +20,8 @@ default = [
 ]
 
 # Tier-1 Modern DCS Backends
-dcs-etcd3 = ["negroni-dcs/etcd3"]
-dcs-kube = ["negroni-dcs/kube"]
+dcs-etcd3 = ["negroni-dcs/etcd3", "negroni-cli/etcd3"]
+dcs-kube = ["negroni-dcs/kube", "negroni-cli/kube"]
 dcs-consul = ["negroni-dcs/consul"]
 dcs-zookeeper = ["negroni-dcs/zookeeper"]
 dcs-raft = ["negroni-dcs/raft"]
@@ -38,6 +38,7 @@ aws-callbacks = ["negroni-ha/aws-callbacks"]
 
 [dependencies]
 anyhow.workspace = true
+negroni-api.workspace = true
 negroni-cli.workspace = true
 negroni-config.workspace = true
 negroni-dcs.workspace = true
@@ -45,4 +46,5 @@ negroni-ha.workspace = true
 negroni-pg.workspace = true
 negroni-watchdog.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 tracing-subscriber.workspace = true

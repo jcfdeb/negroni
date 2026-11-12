@@ -1,12 +1,15 @@
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use compact_str::CompactString;
-use negroni_dcs::{DcsBackend, DcsWatchEvent};
-use negroni_types::WalLsn;
+use negroni_dcs::{DcsBackend, DcsError, DcsWatchEvent};
+use negroni_types::{CasToken, ClusterSnapshot, FailoverIntent, WalLsn};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::AbortHandle;
 use tokio::time::MissedTickBehavior;
 
 use crate::dispatcher::{EffectDispatcher, PeerRpcPort, PgControlPort, WatchdogPort};
@@ -17,12 +20,27 @@ pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 256;
 pub const DEFAULT_FAILSAFE_CHANNEL_CAPACITY: usize = 32;
 
 pub type SharedNodeState = Arc<ArcSwap<PublishedNodeState>>;
+pub type SharedClusterCache = Arc<ArcSwap<ClusterSnapshot>>;
+pub type ControlBoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Debug, Clone)]
 pub struct FailsafeHeartbeatRequest {
     pub leader_name: CompactString,
     pub conn_url: String,
     pub lsn: WalLsn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledRestartInfo {
+    pub schedule: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<CompactString>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub postgres_version: Option<CompactString>,
+    #[serde(default)]
+    pub restart_pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Error)]
@@ -35,10 +53,273 @@ pub enum ControlError {
     Timeout,
 }
 
+#[derive(Debug, Error)]
+pub enum ControlOpError {
+    #[error("CAS conflict on DCS key")]
+    CasConflict,
+    #[error("conflicting operation already scheduled: {0}")]
+    Conflict(String),
+    #[error("invalid control request: {0}")]
+    InvalidInput(String),
+    #[error("precondition failed: {0}")]
+    PreconditionFailed(String),
+    #[error("service unavailable: {0}")]
+    Unavailable(String),
+}
+
+fn map_dcs_error(err: DcsError) -> ControlOpError {
+    match err {
+        DcsError::CasConflict { .. } => ControlOpError::CasConflict,
+        DcsError::LeaseExpired | DcsError::Unreachable(_) => {
+            ControlOpError::Unavailable(err.to_string())
+        }
+    }
+}
+
+/// Object-safe control-plane port bridging `negroni-api` mutating endpoints to DCS and PostgreSQL
+/// without leaking `negroni-dcs` or `tokio-postgres` upward into `negroni-api`.
+pub trait ControlPlaneOps: Send + Sync + 'static {
+    fn fetch_fresh_cluster(
+        &self,
+        timeout: Duration,
+    ) -> ControlBoxFuture<'_, Result<ClusterSnapshot, ControlOpError>>;
+
+    fn cas_config(
+        &self,
+        config_json: serde_json::Value,
+        expected: Option<CasToken>,
+    ) -> ControlBoxFuture<'_, Result<CasToken, ControlOpError>>;
+
+    fn cas_failover(
+        &self,
+        intent: FailoverIntent,
+        expected: Option<CasToken>,
+    ) -> ControlBoxFuture<'_, Result<CasToken, ControlOpError>>;
+
+    fn clear_failover(
+        &self,
+        expected: CasToken,
+    ) -> ControlBoxFuture<'_, Result<(), ControlOpError>>;
+
+    fn restart_local_postgres(
+        &self,
+        in_recovery: bool,
+        timeout: Duration,
+    ) -> ControlBoxFuture<'_, Result<(), ControlOpError>>;
+
+    fn reload_local_node(&self) -> ControlBoxFuture<'_, Result<(), ControlOpError>>;
+}
+
+/// Default in-memory control plane used when `CoordinatorHandle::new` is constructed in standalone unit tests.
+#[derive(Debug, Default)]
+pub struct NoopControlPlane {
+    cluster: SharedClusterCache,
+}
+
+impl NoopControlPlane {
+    pub fn with_cache(cluster: SharedClusterCache) -> Self {
+        Self { cluster }
+    }
+}
+
+impl ControlPlaneOps for NoopControlPlane {
+    fn fetch_fresh_cluster(
+        &self,
+        _timeout: Duration,
+    ) -> ControlBoxFuture<'_, Result<ClusterSnapshot, ControlOpError>> {
+        Box::pin(async move { Ok((**self.cluster.load()).clone()) })
+    }
+
+    fn cas_config(
+        &self,
+        config_json: serde_json::Value,
+        expected: Option<CasToken>,
+    ) -> ControlBoxFuture<'_, Result<CasToken, ControlOpError>> {
+        Box::pin(async move {
+            let mut snap = (**self.cluster.load()).clone();
+            let current_tok = snap.config.as_ref().map(|v| &v.token);
+            if expected.is_some() && current_tok != expected.as_ref() {
+                return Err(ControlOpError::CasConflict);
+            }
+            let next_rev = match current_tok {
+                Some(CasToken::Revision(r)) => r + 1,
+                _ => 1,
+            };
+            let tok = CasToken::Revision(next_rev);
+            snap.config = Some(negroni_types::Versioned {
+                value: config_json,
+                token: tok.clone(),
+            });
+            self.cluster.store(Arc::new(snap));
+            Ok(tok)
+        })
+    }
+
+    fn cas_failover(
+        &self,
+        intent: FailoverIntent,
+        expected: Option<CasToken>,
+    ) -> ControlBoxFuture<'_, Result<CasToken, ControlOpError>> {
+        Box::pin(async move {
+            let mut snap = (**self.cluster.load()).clone();
+            let current_tok = snap.failover.as_ref().map(|v| &v.token);
+            if expected.is_some() && current_tok != expected.as_ref() {
+                return Err(ControlOpError::CasConflict);
+            }
+            let next_rev = match current_tok {
+                Some(CasToken::Revision(r)) => r + 1,
+                _ => 1,
+            };
+            let tok = CasToken::Revision(next_rev);
+            snap.failover = Some(negroni_types::Versioned {
+                value: intent,
+                token: tok.clone(),
+            });
+            self.cluster.store(Arc::new(snap));
+            Ok(tok)
+        })
+    }
+
+    fn clear_failover(
+        &self,
+        _expected: CasToken,
+    ) -> ControlBoxFuture<'_, Result<(), ControlOpError>> {
+        Box::pin(async move {
+            let mut snap = (**self.cluster.load()).clone();
+            snap.failover = None;
+            self.cluster.store(Arc::new(snap));
+            Ok(())
+        })
+    }
+
+    fn restart_local_postgres(
+        &self,
+        _in_recovery: bool,
+        _timeout: Duration,
+    ) -> ControlBoxFuture<'_, Result<(), ControlOpError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn reload_local_node(&self) -> ControlBoxFuture<'_, Result<(), ControlOpError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Live control plane backed by `D: DcsBackend` and `P: PgControlPort`.
+pub struct LiveControlPlane<D, P> {
+    dcs: Arc<D>,
+    pg: Arc<P>,
+    cluster_cache: SharedClusterCache,
+}
+
+impl<D, P> LiveControlPlane<D, P>
+where
+    D: DcsBackend,
+    P: PgControlPort,
+{
+    pub fn new(dcs: Arc<D>, pg: Arc<P>, cluster_cache: SharedClusterCache) -> Self {
+        Self {
+            dcs,
+            pg,
+            cluster_cache,
+        }
+    }
+}
+
+impl<D, P> ControlPlaneOps for LiveControlPlane<D, P>
+where
+    D: DcsBackend,
+    P: PgControlPort,
+{
+    fn fetch_fresh_cluster(
+        &self,
+        timeout: Duration,
+    ) -> ControlBoxFuture<'_, Result<ClusterSnapshot, ControlOpError>> {
+        Box::pin(async move {
+            let snap = self
+                .dcs
+                .fetch_cluster(timeout)
+                .await
+                .map_err(map_dcs_error)?;
+            self.cluster_cache.store(Arc::new(snap.clone()));
+            Ok(snap)
+        })
+    }
+
+    fn cas_config(
+        &self,
+        config_json: serde_json::Value,
+        expected: Option<CasToken>,
+    ) -> ControlBoxFuture<'_, Result<CasToken, ControlOpError>> {
+        Box::pin(async move {
+            self.dcs
+                .cas_config(&config_json, expected.as_ref())
+                .await
+                .map_err(map_dcs_error)
+        })
+    }
+
+    fn cas_failover(
+        &self,
+        intent: FailoverIntent,
+        expected: Option<CasToken>,
+    ) -> ControlBoxFuture<'_, Result<CasToken, ControlOpError>> {
+        Box::pin(async move {
+            self.dcs
+                .cas_failover(&intent, expected.as_ref())
+                .await
+                .map_err(map_dcs_error)
+        })
+    }
+
+    fn clear_failover(
+        &self,
+        expected: CasToken,
+    ) -> ControlBoxFuture<'_, Result<(), ControlOpError>> {
+        Box::pin(async move {
+            self.dcs
+                .clear_failover(&expected)
+                .await
+                .map_err(map_dcs_error)
+        })
+    }
+
+    fn restart_local_postgres(
+        &self,
+        in_recovery: bool,
+        timeout: Duration,
+    ) -> ControlBoxFuture<'_, Result<(), ControlOpError>> {
+        Box::pin(async move {
+            self.pg
+                .restart_node(in_recovery, timeout)
+                .await
+                .map_err(ControlOpError::Unavailable)
+        })
+    }
+
+    fn reload_local_node(&self) -> ControlBoxFuture<'_, Result<(), ControlOpError>> {
+        Box::pin(async move {
+            self.pg
+                .reload_node()
+                .await
+                .map_err(ControlOpError::Unavailable)
+        })
+    }
+}
+
+struct ScheduledRestartSlot {
+    info: Option<ScheduledRestartInfo>,
+    abort_handle: Option<AbortHandle>,
+}
+
 /// Lock-free read + bounded control handle shared with `negroni-api`.
 #[derive(Clone)]
 pub struct CoordinatorHandle {
     published: SharedNodeState,
+    cluster_cache: SharedClusterCache,
+    scheduled_restart: Arc<ArcSwap<Option<ScheduledRestartInfo>>>,
+    scheduled_restart_slot: Arc<Mutex<ScheduledRestartSlot>>,
+    control_ops: Arc<dyn ControlPlaneOps>,
     event_tx: mpsc::Sender<HaEvent>,
     failsafe_tx: mpsc::Sender<(FailsafeHeartbeatRequest, oneshot::Sender<bool>)>,
 }
@@ -49,11 +330,31 @@ impl CoordinatorHandle {
         event_tx: mpsc::Sender<HaEvent>,
         failsafe_tx: mpsc::Sender<(FailsafeHeartbeatRequest, oneshot::Sender<bool>)>,
     ) -> Self {
+        let cluster_cache = Arc::new(ArcSwap::from_pointee(ClusterSnapshot::default()));
+        let control_ops = Arc::new(NoopControlPlane::with_cache(Arc::clone(&cluster_cache)));
         Self {
             published,
+            cluster_cache,
+            scheduled_restart: Arc::new(ArcSwap::from_pointee(None)),
+            scheduled_restart_slot: Arc::new(Mutex::new(ScheduledRestartSlot {
+                info: None,
+                abort_handle: None,
+            })),
+            control_ops,
             event_tx,
             failsafe_tx,
         }
+    }
+
+    #[must_use]
+    pub fn with_control_plane(
+        mut self,
+        cluster_cache: SharedClusterCache,
+        control_ops: Arc<dyn ControlPlaneOps>,
+    ) -> Self {
+        self.cluster_cache = cluster_cache;
+        self.control_ops = control_ops;
+        self
     }
 
     /// ~15ns zero-lock snapshot load for `/primary`, `/replica`, `/read-write`, `/synchronous`, etc.
@@ -61,8 +362,22 @@ impl CoordinatorHandle {
         self.published.load()
     }
 
+    /// ~15ns zero-lock load of the most recently fetched [`ClusterSnapshot`].
+    pub fn load_cached_cluster(&self) -> arc_swap::Guard<Arc<ClusterSnapshot>> {
+        self.cluster_cache.load()
+    }
+
+    /// ~15ns zero-lock load of any pending scheduled restart metadata.
+    pub fn load_scheduled_restart(&self) -> arc_swap::Guard<Arc<Option<ScheduledRestartInfo>>> {
+        self.scheduled_restart.load()
+    }
+
     pub fn shared_state(&self) -> &SharedNodeState {
         &self.published
+    }
+
+    pub fn shared_cluster_cache(&self) -> &SharedClusterCache {
+        &self.cluster_cache
     }
 
     pub async fn submit_operator_command(&self, cmd: ControlCommand) -> Result<(), ControlError> {
@@ -93,6 +408,128 @@ impl CoordinatorHandle {
             Ok(Err(_)) => Err(ControlError::CoordinatorStopped),
             Err(_) => Err(ControlError::Timeout),
         }
+    }
+
+    pub async fn fetch_fresh_cluster(
+        &self,
+        timeout: Duration,
+    ) -> Result<ClusterSnapshot, ControlOpError> {
+        self.control_ops.fetch_fresh_cluster(timeout).await
+    }
+
+    pub async fn cas_config(
+        &self,
+        config_json: serde_json::Value,
+        expected: Option<CasToken>,
+    ) -> Result<CasToken, ControlOpError> {
+        let tok = self.control_ops.cas_config(config_json, expected).await?;
+        let _ = self.event_tx.try_send(HaEvent::WatchWakeup {
+            now: Instant::now(),
+        });
+        Ok(tok)
+    }
+
+    pub async fn cas_failover(
+        &self,
+        intent: FailoverIntent,
+        expected: Option<CasToken>,
+    ) -> Result<CasToken, ControlOpError> {
+        let tok = self.control_ops.cas_failover(intent, expected).await?;
+        let _ = self.event_tx.try_send(HaEvent::WatchWakeup {
+            now: Instant::now(),
+        });
+        Ok(tok)
+    }
+
+    pub async fn clear_failover(&self, expected: CasToken) -> Result<(), ControlOpError> {
+        self.control_ops.clear_failover(expected).await?;
+        let _ = self.event_tx.try_send(HaEvent::WatchWakeup {
+            now: Instant::now(),
+        });
+        Ok(())
+    }
+
+    pub async fn restart_local_postgres(
+        &self,
+        in_recovery: bool,
+        timeout: Duration,
+    ) -> Result<(), ControlOpError> {
+        self.control_ops
+            .restart_local_postgres(in_recovery, timeout)
+            .await
+    }
+
+    pub async fn reload_local_node(&self) -> Result<(), ControlOpError> {
+        self.control_ops.reload_local_node().await?;
+        let _ = self.submit_operator_command(ControlCommand::Reload).await;
+        Ok(())
+    }
+
+    /// Registers a future scheduled restart (`POST /restart` with `"schedule"`), returning
+    /// [`ControlOpError::Conflict`] (`409`) if another restart is already scheduled unless `flush` is `true`.
+    pub fn schedule_restart(
+        &self,
+        info: ScheduledRestartInfo,
+        delay: Duration,
+        flush_existing: bool,
+    ) -> Result<(), ControlOpError> {
+        let mut guard = self
+            .scheduled_restart_slot
+            .lock()
+            .map_err(|_| ControlOpError::Unavailable("scheduled restart lock poisoned".into()))?;
+        if guard.info.is_some() && !flush_existing {
+            return Err(ControlOpError::Conflict(
+                "Restart is already scheduled".to_owned(),
+            ));
+        }
+        if let Some(prev_abort) = guard.abort_handle.take() {
+            prev_abort.abort();
+        }
+
+        let handle_clone = self.clone();
+        let info_for_task = info.clone();
+        let join = tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let snap = handle_clone.load_published_state();
+            let role_matches = info_for_task
+                .role
+                .as_ref()
+                .is_none_or(|r| r.as_str() == snap.role.as_str());
+            let pending_ok = !info_for_task.restart_pending || snap.pending_restart;
+            let in_recovery = snap.role != "primary";
+            drop(snap);
+
+            if role_matches && pending_ok {
+                let stop_timeout = Duration::from_secs(info_for_task.timeout.unwrap_or(60));
+                let _ = handle_clone
+                    .restart_local_postgres(in_recovery, stop_timeout)
+                    .await;
+            }
+
+            if let Ok(mut slot) = handle_clone.scheduled_restart_slot.lock() {
+                slot.info = None;
+                slot.abort_handle = None;
+            }
+            handle_clone.scheduled_restart.store(Arc::new(None));
+        });
+
+        guard.info = Some(info.clone());
+        guard.abort_handle = Some(join.abort_handle());
+        self.scheduled_restart.store(Arc::new(Some(info)));
+        Ok(())
+    }
+
+    /// Cancels any scheduled restart (`DELETE /restart`), returning `true` if a schedule existed.
+    pub fn cancel_scheduled_restart(&self) -> bool {
+        let Ok(mut guard) = self.scheduled_restart_slot.lock() else {
+            return false;
+        };
+        let existed = guard.info.take().is_some();
+        if let Some(abort) = guard.abort_handle.take() {
+            abort.abort();
+        }
+        self.scheduled_restart.store(Arc::new(None));
+        existed
     }
 }
 

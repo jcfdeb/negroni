@@ -345,6 +345,65 @@ impl PgSupervisor {
         Ok(())
     }
 
+    pub async fn reload(&self) -> Result<(), PgError> {
+        let cfg = self.snapshot_config()?;
+        let major = self.resolve_major(&cfg.postgresql.data_dir)?;
+        let overlay = self
+            .inner
+            .lock()
+            .map(|g| g.overlay.clone())
+            .unwrap_or_default();
+        write_managed_pg_configs(&cfg, major, &overlay)?;
+        self.reload_running_instance(&cfg.postgresql.data_dir).await
+    }
+
+    pub async fn restart(&self, in_recovery: bool, stop_timeout: Duration) -> Result<(), PgError> {
+        let cfg = self.snapshot_config()?;
+        let major = self.resolve_major(&cfg.postgresql.data_dir)?;
+        let overlay = self
+            .inner
+            .lock()
+            .map(|g| g.overlay.clone())
+            .unwrap_or_default();
+
+        self.set_process_state(PgProcessState::Restarting);
+        self.sql.disconnect().await;
+        if let Some((_, monitor)) = adopt_running_postmaster(&cfg.postgresql.data_dir)?
+            && let Err(err) = emergency_demote_ladder(
+                Some(&monitor),
+                &cfg.postgresql.data_dir,
+                Instant::now() + stop_timeout,
+            )
+            .await
+        {
+            self.set_process_state(PgProcessState::RestartFailed);
+            return Err(err);
+        }
+
+        if !in_recovery {
+            let _ = remove_standby_signal(&cfg.postgresql.data_dir);
+        }
+        if let Err(err) = write_managed_pg_configs(&cfg, major, &overlay) {
+            self.set_process_state(PgProcessState::RestartFailed);
+            return Err(err);
+        }
+
+        let start_timeout = Duration::from_secs(cfg.dynamic.primary_start_timeout.max(10));
+        match start_postmaster(&cfg, &self.bins, in_recovery, start_timeout).await {
+            Ok((pid_info, _)) => {
+                if let Ok(mut guard) = self.inner.lock() {
+                    guard.process_state = PgProcessState::Running;
+                    guard.postmaster_start_epoch = Some(pid_info.start_epoch_secs);
+                }
+                Ok(())
+            }
+            Err(err) => {
+                self.set_process_state(PgProcessState::RestartFailed);
+                Err(err)
+            }
+        }
+    }
+
     pub async fn sync_slots(
         &self,
         status: &ClusterStatus,

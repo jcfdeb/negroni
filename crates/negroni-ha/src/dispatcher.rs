@@ -32,6 +32,16 @@ pub trait PgControlPort: Send + Sync + 'static {
         is_primary: bool,
         is_demoted_rejoin: bool,
     ) -> impl Future<Output = Result<(), String>> + Send;
+    fn reload_node(&self) -> impl Future<Output = Result<(), String>> + Send {
+        async { Ok(()) }
+    }
+    fn restart_node(
+        &self,
+        _in_recovery: bool,
+        _stop_timeout: Duration,
+    ) -> impl Future<Output = Result<(), String>> + Send {
+        async { Ok(()) }
+    }
 }
 
 /// Port for peer-to-peer REST calls (`GET /patroni` LSN election probes and `POST /failsafe`).
@@ -148,6 +158,16 @@ impl PgControlPort for negroni_pg::PgSupervisor {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+
+    async fn reload_node(&self) -> Result<(), String> {
+        Self::reload(self).await.map_err(|e| e.to_string())
+    }
+
+    async fn restart_node(&self, in_recovery: bool, stop_timeout: Duration) -> Result<(), String> {
+        Self::restart(self, in_recovery, stop_timeout)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -190,6 +210,7 @@ where
     event_tx: mpsc::Sender<HaEvent>,
     pending_failsafe_reply: Mutex<Option<oneshot::Sender<bool>>>,
     last_member_lease: Option<LeaseHandle>,
+    cluster_cache: Option<Arc<arc_swap::ArcSwap<negroni_types::ClusterSnapshot>>>,
 }
 
 impl<D, P, R, J, W> EffectDispatcher<D, P, R, J, W>
@@ -220,7 +241,17 @@ where
             event_tx,
             pending_failsafe_reply: Mutex::new(None),
             last_member_lease: None,
+            cluster_cache: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_cluster_cache(
+        mut self,
+        cache: Arc<arc_swap::ArcSwap<negroni_types::ClusterSnapshot>>,
+    ) -> Self {
+        self.cluster_cache = Some(cache);
+        self
     }
 
     pub fn register_failsafe_reply(&self, reply: oneshot::Sender<bool>) {
@@ -272,11 +303,17 @@ where
             Effect::FetchDcs { rpc_epoch, timeout } => {
                 let dcs = Arc::clone(&self.dcs);
                 let tx = self.event_tx.clone();
+                let cache = self.cluster_cache.clone();
                 tokio::spawn(async move {
                     let attempt_started_at = Instant::now();
                     let res = match tokio::time::timeout(timeout, dcs.fetch_cluster(timeout)).await
                     {
-                        Ok(Ok(snap)) => Ok(Box::new(snap)),
+                        Ok(Ok(snap)) => {
+                            if let Some(ref c) = cache {
+                                c.store(Arc::new(snap.clone()));
+                            }
+                            Ok(Box::new(snap))
+                        }
                         Ok(Err(err)) => Err(err.to_string()),
                         Err(_) => Err(format!("DCS fetch timed out after {timeout:?}")),
                     };

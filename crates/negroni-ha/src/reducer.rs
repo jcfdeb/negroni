@@ -86,9 +86,12 @@ pub enum PausedRole {
 
 #[derive(Debug, Clone)]
 pub struct PublishedNodeState {
+    pub scope: CompactString,
+    pub member_name: CompactString,
     pub state: CompactString,
     pub role: CompactString,
     pub is_read_write_valid: bool,
+    pub holds_leader_lease: bool,
     pub is_sync_standby: bool,
     pub is_quorum_standby: bool,
     pub noloadbalance: bool,
@@ -96,16 +99,31 @@ pub struct PublishedNodeState {
     pub timeline: u64,
     pub pending_restart: bool,
     pub pause: bool,
+    pub ttl: Duration,
     pub last_ha_tick: Instant,
+    pub dcs_last_seen: Option<Instant>,
+    pub postgres_state_code: u8,
+    pub xlog_location: WalLsn,
+    pub xlog_paused: bool,
+    pub postmaster_start_time_epoch: u64,
+    pub xlog_replayed_timestamp_epoch: f64,
+    pub server_version_num: u32,
+    pub database_system_identifier: Option<CompactString>,
+    pub cluster_unlocked: bool,
+    pub failsafe_enabled: bool,
+    pub failsafe_mode_is_active: bool,
     pub user_tags: BTreeMap<CompactString, CompactString>,
 }
 
 impl PublishedNodeState {
     pub fn initial(now: Instant) -> Self {
         Self {
+            scope: CompactString::const_new("default"),
+            member_name: CompactString::const_new("node"),
             state: CompactString::const_new("starting"),
             role: CompactString::const_new("uninitialized"),
             is_read_write_valid: false,
+            holds_leader_lease: false,
             is_sync_standby: false,
             is_quorum_standby: false,
             noloadbalance: false,
@@ -113,41 +131,65 @@ impl PublishedNodeState {
             timeline: 0,
             pending_restart: false,
             pause: false,
+            ttl: Duration::from_secs(30),
             last_ha_tick: now,
+            dcs_last_seen: None,
+            postgres_state_code: 6, // Starting
+            xlog_location: WalLsn::ZERO,
+            xlog_paused: false,
+            postmaster_start_time_epoch: 0,
+            xlog_replayed_timestamp_epoch: 0.0,
+            server_version_num: 170_000,
+            database_system_identifier: None,
+            cluster_unlocked: true,
+            failsafe_enabled: false,
+            failsafe_mode_is_active: false,
             user_tags: BTreeMap::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LocalPgSummary {
     pub has_valid_pgdata: bool,
     pub state_label: CompactString,
+    pub postgres_state_code: u8,
     pub in_recovery: bool,
     pub lsn: WalLsn,
+    pub xlog_paused: bool,
     pub timeline: u64,
     pub lag_bytes: u64,
     pub is_sync_standby: bool,
     pub is_quorum_standby: bool,
     pub pending_restart: bool,
     pub needs_rewind: bool,
+    pub postmaster_start_time_epoch: u64,
+    pub xlog_replayed_timestamp_epoch: f64,
+    pub server_version_num: u32,
     pub system_identifier: Option<CompactString>,
     pub slots: BTreeMap<CompactString, Option<WalLsn>>,
 }
+
+impl Eq for LocalPgSummary {}
 
 impl Default for LocalPgSummary {
     fn default() -> Self {
         Self {
             has_valid_pgdata: false,
             state_label: CompactString::const_new("stopped"),
+            postgres_state_code: 12, // Stopped
             in_recovery: true,
             lsn: WalLsn::ZERO,
+            xlog_paused: false,
             timeline: 0,
             lag_bytes: 0,
             is_sync_standby: false,
             is_quorum_standby: false,
             pending_restart: false,
             needs_rewind: false,
+            postmaster_start_time_epoch: 0,
+            xlog_replayed_timestamp_epoch: 0.0,
+            server_version_num: 170_000,
             system_identifier: None,
             slots: BTreeMap::new(),
         }
@@ -371,6 +413,7 @@ const MIN_SOFTWARE_SAFETY_MARGIN: Duration = Duration::from_secs(5);
 const DEMOTE_IMMEDIATE_LEAD: Duration = Duration::from_secs(2);
 
 pub struct NodeCtx {
+    pub scope: CompactString,
     pub self_name: CompactString,
     pub self_conn_url: String,
     pub self_api_url: String,
@@ -398,6 +441,7 @@ pub struct NodeCtx {
     pub user_tags: BTreeMap<CompactString, CompactString>,
     pub last_pg: LocalPgSummary,
     pub last_tick_at: Instant,
+    pub last_dcs_seen_at: Option<Instant>,
     pub last_failsafe_roster: Vec<(CompactString, String)>,
     pub candidate_failsafe_roster: Vec<(CompactString, String)>,
     pub last_known_failsafe_map: Option<BTreeMap<CompactString, String>>,
@@ -439,6 +483,7 @@ impl NodeCtx {
             .is_some_and(|m| !m.is_empty() && m != "initdb");
 
         Self {
+            scope: cfg.scope.clone(),
             self_name: cfg.name.clone(),
             self_conn_url: format!("postgres://{conn_addr}/postgres"),
             self_api_url: format!("{api_scheme}://{api_addr}/patroni"),
@@ -466,6 +511,7 @@ impl NodeCtx {
             user_tags: cfg.tags.custom_string_tags(),
             last_pg: LocalPgSummary::default(),
             last_tick_at: boot_now,
+            last_dcs_seen_at: None,
             last_failsafe_roster: Vec::new(),
             candidate_failsafe_roster: Vec::new(),
             last_known_failsafe_map: None,
@@ -1056,6 +1102,7 @@ impl NodeCtx {
         effects: &mut EffectBatch,
     ) {
         if let Ok(ref snap) = result {
+            self.last_dcs_seen_at = Some(now);
             self.last_observed_dcs_leader = snap.leader.as_ref().map(|l| l.value.clone());
             self.last_known_sync = snap.sync.as_ref().map(|s| s.value.clone());
             self.last_known_sync_token = snap.sync.as_ref().map(|s| s.token.clone());
@@ -1825,20 +1872,31 @@ impl NodeCtx {
             .is_some_and(|s| s.contains_standby(&self.self_name));
         let is_quorum = is_sync && self.synchronous_mode == SyncMode::Quorum;
 
-        let (role, is_rw) = match &self.state {
+        let (role, is_rw, holds_leader_lease) = match &self.state {
             HaRoleState::Primary {
                 lease_valid_until, ..
             }
-            | HaRoleState::FailsafePrimary { lease_valid_until } => (
-                CompactString::const_new("primary"),
-                pg_running_rw && now < *lease_valid_until,
-            ),
+            | HaRoleState::FailsafePrimary { lease_valid_until } => {
+                let valid = now < *lease_valid_until;
+                (
+                    CompactString::const_new("primary"),
+                    pg_running_rw && valid,
+                    valid,
+                )
+            }
             HaRoleState::Paused {
                 underlying_role: PausedRole::Primary,
-                ..
-            } => (CompactString::const_new("primary"), pg_running_rw),
-            HaRoleState::StandbyLeader { .. } => {
-                (CompactString::const_new("standby_leader"), false)
+                held_leader,
+            } => (
+                CompactString::const_new("primary"),
+                pg_running_rw,
+                held_leader.is_some() || pg_running_rw,
+            ),
+            HaRoleState::StandbyLeader {
+                lease_valid_until, ..
+            } => {
+                let valid = now < *lease_valid_until;
+                (CompactString::const_new("standby_leader"), false, valid)
             }
             HaRoleState::Replica { .. }
             | HaRoleState::ElectionCandidate { .. }
@@ -1846,14 +1904,33 @@ impl NodeCtx {
             | HaRoleState::Paused {
                 underlying_role: PausedRole::Replica,
                 ..
-            } => (CompactString::const_new("replica"), false),
-            _ => (CompactString::const_new("uninitialized"), false),
+            } => (CompactString::const_new("replica"), false, false),
+            _ => (CompactString::const_new("uninitialized"), false, false),
         };
 
+        let postgres_state_code =
+            if self.last_pg.is_running() && self.last_pg.postgres_state_code == 12 {
+                5
+            } else {
+                self.last_pg.postgres_state_code
+            };
+
+        let failsafe_mode_is_active = matches!(self.state, HaRoleState::FailsafePrimary { .. })
+            || self
+                .accepted_failsafe_leader
+                .as_ref()
+                .is_some_and(|(_, until)| now < *until);
+
+        let cluster_unlocked =
+            self.last_observed_dcs_leader.is_none() && !self.has_active_leader(now);
+
         PublishedNodeState {
+            scope: self.scope.clone(),
+            member_name: self.self_name.clone(),
             state: self.last_pg.state_label.clone(),
             role,
             is_read_write_valid: is_rw,
+            holds_leader_lease,
             is_sync_standby: self.last_pg.is_sync_standby || is_sync,
             is_quorum_standby: self.last_pg.is_quorum_standby || is_quorum,
             noloadbalance: self.noloadbalance_tag,
@@ -1861,7 +1938,19 @@ impl NodeCtx {
             timeline: self.last_pg.timeline,
             pending_restart: self.last_pg.pending_restart,
             pause: matches!(self.state, HaRoleState::Paused { .. }),
+            ttl: self.ttl,
             last_ha_tick: self.last_tick_at,
+            dcs_last_seen: self.last_dcs_seen_at,
+            postgres_state_code,
+            xlog_location: self.last_pg.lsn,
+            xlog_paused: self.last_pg.xlog_paused,
+            postmaster_start_time_epoch: self.last_pg.postmaster_start_time_epoch,
+            xlog_replayed_timestamp_epoch: self.last_pg.xlog_replayed_timestamp_epoch,
+            server_version_num: self.last_pg.server_version_num,
+            database_system_identifier: self.last_pg.system_identifier.clone(),
+            cluster_unlocked,
+            failsafe_enabled: self.failsafe_enabled,
+            failsafe_mode_is_active,
             user_tags: self.user_tags.clone(),
         }
     }

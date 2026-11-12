@@ -462,16 +462,36 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp_pgdata);
         fs::create_dir_all(&tmp_pgdata).unwrap();
 
-        // Spawn a shell process that traps/ignores SIGINT (simulating stuck fast-shutdown
-        // backend) so Stage 2 SIGQUIT escalation MUST fire at `immediate_at` to stop it!
+        // Spawn a mock postmaster that ignores SIGINT (simulating a stuck fast-shutdown
+        // backend) and installs an explicit SIGQUIT handler (matching PostgreSQL's
+        // `pqsignal(SIGQUIT, pmdie)`—note non-interactive `/bin/sh` defaults SIGQUIT to SIG_IGN)
+        // so Stage 2 SIGQUIT escalation at `immediate_at` is deterministically verified.
+        let ready_marker = tmp_pgdata.join("mock_ready");
+        let quit_marker = tmp_pgdata.join("sigquit_received");
         let mut stubborn_child = Command::new("sh")
             .arg("-c")
-            .arg("trap '' INT; sleep 30")
+            .arg(
+                "trap '' INT; \
+                 trap ': > \"$2\"; kill $child 2>/dev/null; exit 2' QUIT; \
+                 sleep 30 & child=$!; \
+                 : > \"$1\"; \
+                 while kill -0 $child 2>/dev/null; do wait $child; done",
+            )
+            .arg("sh")
+            .arg(&ready_marker)
+            .arg(&quit_marker)
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        // Brief pause so `sh` installs `trap '' INT`.
-        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        let wait_deadline = Instant::now() + Duration::from_secs(2);
+        while !ready_marker.exists() {
+            assert!(
+                Instant::now() < wait_deadline,
+                "timed out waiting for mock postmaster trap installation"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
 
         let pid = stubborn_child.id().unwrap();
         let monitor = PidfdProcessMonitor::adopt(pid, None).unwrap().unwrap();
@@ -484,7 +504,8 @@ mod tests {
             .unwrap();
 
         let status = reap_handle.await.unwrap().unwrap();
-        assert!(!status.success());
+        assert_eq!(status.code(), Some(2));
+        assert!(quit_marker.exists());
         assert!(!monitor.is_alive());
         assert!(tmp_pgdata.join("standby.signal").exists());
 

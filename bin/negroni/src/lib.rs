@@ -70,6 +70,68 @@ fn init_tracing() {
     let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
+async fn run_full_daemon(
+    cfg: negroni_config::DaemonConfig,
+    watchdog: negroni_watchdog::WatchdogHandle,
+) -> ExitCode {
+    let backends = negroni_dcs::compiled_backends();
+    tracing::info!(
+        scope = %cfg.scope,
+        member = %cfg.name,
+        namespace = %cfg.namespace,
+        restapi = %cfg.restapi.listen,
+        ?backends,
+        citus = negroni_pg::citus_enabled(),
+        aws_callbacks = negroni_ha::aws_callbacks_enabled(),
+        "starting negroni daemon"
+    );
+
+    let (handle, ha_runtime) =
+        match negroni_ha::start_coordinator_runtime(cfg.clone(), watchdog).await {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::error!(error = %err, "failed to start HA coordinator runtime");
+                return ExitCode::FAILURE;
+            }
+        };
+
+    let api_shutdown = ha_runtime.shutdown_receiver();
+    let mut api_join =
+        tokio::spawn(async move { negroni_api::serve_rest_api(cfg, handle, api_shutdown).await });
+
+    negroni_watchdog::notify_systemd("READY=1");
+
+    let exit_code = tokio::select! {
+        sig = tokio::signal::ctrl_c() => {
+            match sig {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    tracing::error!(error = %err, "failed waiting on shutdown signal");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        api_res = &mut api_join => {
+            match api_res {
+                Ok(Ok(())) => ExitCode::SUCCESS,
+                Ok(Err(err)) => {
+                    tracing::error!(error = %err, "REST API server exited with error");
+                    ExitCode::FAILURE
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "REST API server task panicked/aborted");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    };
+
+    negroni_watchdog::notify_systemd("STOPPING=1");
+    ha_runtime.shutdown().await;
+    let _ = api_join.await;
+    exit_code
+}
+
 fn boot_daemon(config_path: &str) -> anyhow::Result<ExitCode> {
     let cfg = negroni_config::load_and_validate(config_path)
         .with_context(|| format!("fatal configuration error loading '{config_path}'"))?;
@@ -92,7 +154,7 @@ fn boot_daemon(config_path: &str) -> anyhow::Result<ExitCode> {
         }
     };
 
-    Ok(runtime.block_on(negroni_ha::run_daemon(cfg, watchdog)))
+    Ok(runtime.block_on(run_full_daemon(cfg, watchdog)))
 }
 
 pub fn run_entrypoint(args: Vec<String>) -> ExitCode {

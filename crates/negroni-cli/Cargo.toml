@@ -8,6 +8,27 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+etcd3 = ["negroni-dcs/etcd3"]
+kube = ["negroni-dcs/kube"]
+
 [dependencies]
+anyhow.workspace = true
 clap.workspace = true
+comfy-table.workspace = true
+compact_str.workspace = true
+jiff.workspace = true
+negroni-config.workspace = true
 negroni-dcs.workspace = true
+negroni-types.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tokio-postgres-rustls.workspace = true
