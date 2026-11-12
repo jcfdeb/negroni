@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -27,53 +29,65 @@ pub enum DcsError {
     Unreachable(String),
 }
 
-#[allow(async_fn_in_trait)]
 pub trait DcsBackend: Send + Sync + 'static {
-    async fn fetch_cluster(&self, timeout: Duration) -> Result<ClusterSnapshot, DcsError>;
-    async fn ensure_lease(
+    fn fetch_cluster(
+        &self,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<ClusterSnapshot, DcsError>> + Send;
+    fn ensure_lease(
         &self,
         ttl: Duration,
         current: Option<&LeaseHandle>,
-    ) -> Result<LeaseHandle, DcsError>;
-    async fn cas_initialize(&self, sys_id: &str) -> Result<CasToken, DcsError>;
-    async fn acquire_or_renew_leader(
+    ) -> impl Future<Output = Result<LeaseHandle, DcsError>> + Send;
+    fn cas_initialize(
+        &self,
+        sys_id: &str,
+    ) -> impl Future<Output = Result<CasToken, DcsError>> + Send;
+    fn acquire_or_renew_leader(
         &self,
         self_name: &str,
         lease: &LeaseHandle,
         expected: Option<&CasToken>,
-    ) -> Result<CasToken, DcsError>;
-    async fn release_leader(&self, self_name: &str, expected: &CasToken) -> Result<(), DcsError>;
-    async fn upsert_member(
+    ) -> impl Future<Output = Result<CasToken, DcsError>> + Send;
+    fn release_leader(
+        &self,
+        self_name: &str,
+        expected: &CasToken,
+    ) -> impl Future<Output = Result<(), DcsError>> + Send;
+    fn upsert_member(
         &self,
         self_name: &str,
         data: &MemberData,
         lease: &LeaseHandle,
-    ) -> Result<(), DcsError>;
-    async fn publish_leader_state(
+    ) -> impl Future<Output = Result<(), DcsError>> + Send;
+    fn publish_leader_state(
         &self,
         status: &ClusterStatus,
         failsafe_roster: Option<&BTreeMap<CompactString, String>>,
-    ) -> Result<(), DcsError>;
-    async fn append_history_entry(
+    ) -> impl Future<Output = Result<(), DcsError>> + Send;
+    fn append_history_entry(
         &self,
         entry: &negroni_types::HistoryEntry,
-    ) -> Result<(), DcsError>;
-    async fn cas_sync_state(
+    ) -> impl Future<Output = Result<(), DcsError>> + Send;
+    fn cas_sync_state(
         &self,
         next: &SyncState,
         expected: Option<&CasToken>,
-    ) -> Result<CasToken, DcsError>;
-    async fn cas_config(
+    ) -> impl Future<Output = Result<CasToken, DcsError>> + Send;
+    fn cas_config(
         &self,
         config_json: &serde_json::Value,
         expected: Option<&CasToken>,
-    ) -> Result<CasToken, DcsError>;
-    async fn cas_failover(
+    ) -> impl Future<Output = Result<CasToken, DcsError>> + Send;
+    fn cas_failover(
         &self,
         intent: &FailoverIntent,
         expected: Option<&CasToken>,
-    ) -> Result<CasToken, DcsError>;
-    async fn clear_failover(&self, expected: &CasToken) -> Result<(), DcsError>;
+    ) -> impl Future<Output = Result<CasToken, DcsError>> + Send;
+    fn clear_failover(
+        &self,
+        expected: &CasToken,
+    ) -> impl Future<Output = Result<(), DcsError>> + Send;
     fn subscribe_watches(&self) -> mpsc::Receiver<DcsWatchEvent>;
 }
 

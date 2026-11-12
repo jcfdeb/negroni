@@ -13,6 +13,5 @@ default = []
 citus = []
 
 [dependencies]
-negroni-config.workspace = true
 negroni-types.workspace = true
 thiserror.workspace = true

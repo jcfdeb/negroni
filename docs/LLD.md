@@ -10,6 +10,10 @@
 negroni/
 ├── AGENTS.md
 ├── Cargo.toml
+├── deny.toml                   # cargo-deny v2 advisories, OSI licenses, OpenSSL/YAML/pool bans
+├── rustfmt.toml                # Deterministic Rust 2024 formatting configuration
+├── .config/
+│   └── nextest.toml            # cargo-nextest isolated runner & CI JUnit profiles
 ├── docs/
 │   ├── HLD.md
 │   ├── LLD.md
@@ -24,10 +28,12 @@ negroni/
 │   ├── negroni-api/            # axum + rustls ArcSwap probes & guarded control-plane endpoints
 │   └── negroni-cli/            # clap + comfy-table + similar 19-command patronictl/negronictl
 └── bin/
-    └── negroni/                # Multicall binary entrypoint (daemon + CLI router)
+    └── negroni/                # Thin main.rs + testable lib.rs multicall entrypoint
 ```
 
 ### 1.2 Root Workspace `Cargo.toml`
+
+> **Note:** Workspace dependencies are added to individual crate manifests strictly in the milestone phase that imports them (`cargo-machete` / `-D unused-crate-dependencies` zero-unused-deps policy).
 
 ```toml
 [workspace]
@@ -47,16 +53,30 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 
 [workspace.lints.rust]
-unsafe_code = "deny" # Overridden exclusively in crates/negroni-watchdog/src/ioctl_linux.rs
+unsafe_code = "deny" # #![forbid(unsafe_code)] in 8 crates; overridden solely in ioctl_linux.rs
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+undocumented_unsafe_blocks = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+cloned_instead_of_copied = "deny"
+debug_assert_with_mut_call = "deny"
+explicit_iter_loop = "deny"
+implicit_clone = "deny"
+inefficient_to_string = "deny"
+manual_let_else = "deny"
+semicolon_if_nothing_returned = "deny"
+unnested_or_patterns = "deny"
 
 [workspace.dependencies]
 anyhow = "1.0"

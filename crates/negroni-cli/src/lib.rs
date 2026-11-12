@@ -1,3 +1,6 @@
+#![forbid(unsafe_code)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};

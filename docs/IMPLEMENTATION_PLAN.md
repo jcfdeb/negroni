@@ -23,13 +23,13 @@ Every task below maps directly to `docs/HLD.md` and `docs/LLD.md`. Complete phas
 - [x] **1.1 Hardware Watchdog OS Thread & Systemd Notifier (`negroni-watchdog`)**
   - **Files:** `crates/negroni-watchdog/src/{lib.rs, thread.rs, ioctl_linux.rs, systemd.rs}`.
   - **Deliverable:** Dedicated pre-Tokio `std::thread` managing `/dev/watchdog` (`WDIOC_SETTIMEOUT` with kernel granularity readback validation, `WDIOC_KEEPALIVE`, magic `'V'` disarm), software mock watchdog for unit tests, and native `NOTIFY_SOCKET` (`sd_notify`) client.
-- [ ] **1.2 Pure Synchronous State Reducer (`negroni-ha::reducer`)**
+- [x] **1.2 Pure Synchronous State Reducer (`negroni-ha::reducer`)**
   - **Files:** `crates/negroni-ha/src/{reducer.rs, election.rs, sync_standby.rs}`.
   - **Deliverable:** Implement all HA states (`ArmingPrimary` watchdog gate, peer-LSN `ElectionCandidate` discovery, multi-tick `FailsafePrimary` renewal & DCS recovery, and `Paused` primary preservation), `rpc_epoch` / `state_epoch` split fencing, pre-flight `LeaseProof` math, and priority (`FIRST N`) / quorum (`ANY N`) synchronous standby computation (`sync_priority`, `nosync`).
-- [ ] **1.3 Cancel-Safe Actor Shell & Background Job Supervisor (`negroni-ha::actor`)**
+- [x] **1.3 Cancel-Safe Actor Shell & Background Job Supervisor (`negroni-ha::actor`)**
   - **Files:** `crates/negroni-ha/src/{lib.rs, actor.rs, dispatcher.rs, jobs.rs}`.
   - **Deliverable:** Implement `coordinator_loop` (strictly cancel-safe `tokio::select!`), `EffectDispatcher`, cancellable `JobSupervisor`, and `ArcSwap<PublishedNodeState>` atomic publisher.
-- [ ] **1.4 In-Memory Deterministic Simulation Testing (`SimCluster`)**
+- [x] **1.4 In-Memory Deterministic Simulation Testing (`SimCluster`)**
   - **Files:** `crates/negroni-ha/tests/dst_cluster_sim.rs`.
   - **Deliverable:** Virtual-clock 3-node and 5-node `proptest` simulator injecting asymmetric network partitions, delayed demotions, and `FailsafePrimary` rejections; prove zero overlapping writable primary windows across 10,000+ generated schedules.
 
@@ -43,9 +43,9 @@ Every task below maps directly to `docs/HLD.md` and `docs/LLD.md`. Complete phas
 - [ ] **2.2 Single-Connection `SqlControlActor`**
   - **Files:** `crates/negroni-pg/src/sql_actor.rs`.
   - **Deliverable:** Bounded-channel single persistent `tokio_postgres::Client` (Unix socket + `rustls` fallback), 1-RTT telemetry SQL query, `pg_promote()`, and version-routed checkpoint stats (`pg_stat_bgwriter` on 15–16 vs `pg_stat_checkpointer` on 17–18).
-- [ ] **2.3 Atomic Config Writer, Unit Canonicalizer & HBA/Ident Validator**
-  - **Files:** `crates/negroni-pg/src/{config_writer.rs, guc_units.rs, hba_validator.rs}`.
-  - **Deliverable:** `postgresql.base.conf` preservation, crash-safe `.tmp` + `fsync` + `rename` + dir `fsync` writer, byte/microsecond GUC unit normalizer, PG 16+ `include*`/`/regex/` validator, and PG 18 `oauth` + Async I/O validator.
+- [ ] **2.3 Atomic Config Writer, Unit Canonicalizer, HBA/Ident Validator & Parser Fuzzers**
+  - **Files:** `crates/negroni-pg/src/{config_writer.rs, guc_units.rs, hba_validator.rs}`, `fuzz/fuzz_targets/{patroni_yaml.rs, wire_json.rs, guc_units.rs, hba_validator.rs}`.
+  - **Deliverable:** `postgresql.base.conf` preservation, crash-safe `.tmp` + `fsync` + `rename` + dir `fsync` writer, byte/microsecond GUC unit normalizer, PG 16+ `include*`/`/regex/` validator, PG 18 `oauth` + Async I/O validator, and `cargo-fuzz` targets covering YAML/JSON/GUC/HBA untrusted inputs.
 - [ ] **2.4 Replica Cloning, `pg_rewind` & Custom Bootstrap Hooks**
   - **Files:** `crates/negroni-pg/src/{clone.rs, rewind.rs}`.
   - **Deliverable:** `pg_basebackup` streaming clone (`clonefrom` aware), custom replica commands (`wal-g`, `pgbackrest`, `barman`), timeline history divergence check, checksum/`wal_log_hints` gate, and `pg_rewind --restore-target-wal` runner.
@@ -95,5 +95,5 @@ Every task below maps directly to `docs/HLD.md` and `docs/LLD.md`. Complete phas
   - **Deliverable:** Containerized CI harness running Patroni's unmodified `features/*.feature` black-box suite against `negroni` across PostgreSQL 15, 16, 17, and 18.
 - [ ] **5.2 Zero-Downtime Mixed-Node Rolling Migration Suite**
   - **Deliverable:** Automated integration test migrating a live 3-node Patroni 4.1 cluster under `pgbench` read/write load node-by-node to 3 Negroni nodes on both etcd v3 and Kubernetes with zero split-brain or lost committed transactions.
-- [ ] **5.3 Jepsen Nemesis Validation & Static Packaging**
-  - **Deliverable:** Pass Jepsen network-partition / `SIGSTOP` / clock-skew workloads and publish static `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` releases, OCI images, and RPM/DEB packages containing `/usr/bin/negroni`, `/usr/bin/negronictl`, and `/usr/bin/patronictl` symlinks.
+- [ ] **5.3 Jepsen Nemesis Validation & Cloud-Native Packaging**
+  - **Deliverable:** Pass Jepsen network-partition / `SIGSTOP` / clock-skew workloads and publish static `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` releases, rootless multi-arch OCI container images, `podman compose` / Docker Compose dev manifests (`compose.yaml`), an OCI **Helm chart** (`StatefulSet`, least-privilege DCS RBAC, `Service`s, `PodDisruptionBudget`, `ServiceMonitor`), and RPM/DEB packages containing `/usr/bin/negroni`, `/usr/bin/negronictl`, and `/usr/bin/patronictl` symlinks.

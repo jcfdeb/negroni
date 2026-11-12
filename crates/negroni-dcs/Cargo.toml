@@ -20,7 +20,6 @@ exhibitor = []
 
 [dependencies]
 compact_str.workspace = true
-negroni-config.workspace = true
 negroni-types.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

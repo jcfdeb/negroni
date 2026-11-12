@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use negroni_types::UnsupportedPgVersion;
 use thiserror::Error;
 

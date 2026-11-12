@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use negroni_ha::PublishedNodeState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

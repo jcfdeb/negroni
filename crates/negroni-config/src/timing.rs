@@ -58,6 +58,21 @@ impl ValidatedTimings {
     }
 }
 
+/// Validates Patroni HA lease and hardware watchdog timing equations:
+/// - `loop_wait + 2 * retry_timeout <= ttl`
+/// - `watchdog_timeout >= loop_wait + retry_timeout + 2s` (leaving >= 2s demotion budget)
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+/// use negroni_config::{WatchdogMode, validate_timings};
+///
+/// let timings = validate_timings(30, 10, 10, WatchdogMode::Automatic, 5)?;
+/// assert_eq!(timings.watchdog_timeout, Some(Duration::from_secs(25)));
+/// assert_eq!(timings.demotion_budget(), Some(Duration::from_secs(5)));
+/// # Ok::<(), negroni_config::ConfigError>(())
+/// ```
 pub fn validate_timings(
     ttl_secs: u64,
     loop_wait_secs: u64,

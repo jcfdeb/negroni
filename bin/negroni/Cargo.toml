@@ -37,13 +37,12 @@ systemd = ["negroni-watchdog/systemd"]
 aws-callbacks = ["negroni-ha/aws-callbacks"]
 
 [dependencies]
-negroni-api.workspace = true
+anyhow.workspace = true
 negroni-cli.workspace = true
 negroni-config.workspace = true
 negroni-dcs.workspace = true
 negroni-ha.workspace = true
 negroni-pg.workspace = true
-negroni-types.workspace = true
 negroni-watchdog.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true

@@ -12,13 +12,13 @@
 *Same battle-tested recipe as Patroni. Zero runtime hangover.*
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust: 1.85+ (2024 Edition)](https://img.shields.io/badge/rust-1.85%2B%20(2024)-orange.svg)](https://www.rust-lang.org/)
+[![Rust: 1.88+ (2024 Edition)](https://img.shields.io/badge/rust-1.88%2B%20(2024)-orange.svg)](https://www.rust-lang.org/)
 [![PostgreSQL: 15–18](https://img.shields.io/badge/PostgreSQL-15--18-336791.svg)](https://www.postgresql.org/)
 [![CI](https://github.com/jcfdeb/negroni/actions/workflows/ci.yml/badge.svg)](https://github.com/jcfdeb/negroni/actions/workflows/ci.yml)
 
 **Negroni** is a deterministic, memory-safe, **1:1 wire-compatible Rust implementation of [Patroni 4.1+](https://github.com/patroni/patroni)** scoped to **PostgreSQL 15 through 18** (and Citus 12+). It compiles into a single static multicall Linux/POSIX binary (`negroni`) that also serves as `patronictl` and `negronictl`.
 
-> **Project Status:** Pre-v0.1 active development. Architecture (`HLD` & `LLD`) and simulation specifications are locked; Phase 0–1 workspace implementation is underway. See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for live progress.
+> **Project Status:** Pre-v0.1 active development. Phase 0 (wire models, `patroni.yml`/env config engine) and Phase 1 (hardware watchdog thread, pure HA reducer, cancel-safe coordinator, and 10,000+ `SimCluster` DST schedules) are complete; Phase 2 (`negroni-pg`) is next. See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for live progress.
 
 ---
 > Status: **experimental**
@@ -110,7 +110,7 @@ negronictl -c /etc/patroni/patroni.yml switchover
 
 ### Building from Source
 
-Requires Rust **1.85+** (`2024` edition):
+Requires Rust **1.88+** (`2024` edition):
 
 ```bash
 git clone https://github.com/jcfdeb/negroni.git

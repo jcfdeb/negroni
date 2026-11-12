@@ -39,3 +39,4 @@ flamegraph.svg
 !.vscode/extensions.json
 *.swp
 *~
+tmp/

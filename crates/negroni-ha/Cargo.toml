@@ -20,6 +20,11 @@ negroni-dcs.workspace = true
 negroni-pg.workspace = true
 negroni-types.workspace = true
 negroni-watchdog.workspace = true
+serde_json.workspace = true
 smallvec.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -536,17 +536,19 @@ pub struct DcsBackendConfigs {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct NodeTags {
     #[serde(default)]
-    pub nofailover: bool,
+    pub nofailover: Option<bool>,
+    #[serde(default)]
+    pub failover_priority: Option<i64>,
     #[serde(default)]
     pub noloadbalance: bool,
     #[serde(default)]
     pub clonefrom: bool,
     #[serde(default)]
-    pub nosync: bool,
+    pub nosync: Option<bool>,
     #[serde(default)]
     pub nostream: bool,
     #[serde(default)]
-    pub sync_priority: i64,
+    pub sync_priority: Option<i64>,
     #[serde(default)]
     pub replicatefrom: Option<CompactString>,
     #[serde(flatten)]
@@ -554,6 +556,88 @@ pub struct NodeTags {
 }
 
 impl NodeTags {
+    pub fn effective_nofailover(&self) -> bool {
+        if let Some(explicit) = self.nofailover {
+            explicit
+        } else if let Some(prio) = self.failover_priority {
+            prio <= 0
+        } else {
+            false
+        }
+    }
+
+    pub fn effective_failover_priority(&self) -> i64 {
+        if self.nofailover == Some(true) {
+            0
+        } else {
+            self.failover_priority.unwrap_or(1)
+        }
+    }
+
+    pub fn effective_nosync(&self) -> bool {
+        if let Some(explicit) = self.nosync {
+            explicit
+        } else if let Some(prio) = self.sync_priority {
+            prio <= 0
+        } else {
+            false
+        }
+    }
+
+    pub fn effective_sync_priority(&self) -> i64 {
+        if self.nosync == Some(true) {
+            0
+        } else {
+            self.sync_priority.unwrap_or(1)
+        }
+    }
+
+    /// Renders the wire `tags` JSON map published inside `MemberData`.
+    pub fn to_member_tags_json(&self) -> BTreeMap<CompactString, JsonValue> {
+        let mut out = self.custom.clone();
+        if let Some(nf) = self.nofailover
+            && (nf || self.failover_priority.is_some())
+        {
+            out.insert(CompactString::const_new("nofailover"), JsonValue::Bool(nf));
+        }
+        if let Some(fp) = self.failover_priority {
+            out.insert(
+                CompactString::const_new("failover_priority"),
+                JsonValue::Number(fp.into()),
+            );
+        }
+        if self.noloadbalance {
+            out.insert(
+                CompactString::const_new("noloadbalance"),
+                JsonValue::Bool(true),
+            );
+        }
+        if self.clonefrom {
+            out.insert(CompactString::const_new("clonefrom"), JsonValue::Bool(true));
+        }
+        if let Some(ns) = self.nosync
+            && (ns || self.sync_priority.is_some())
+        {
+            out.insert(CompactString::const_new("nosync"), JsonValue::Bool(ns));
+        }
+        if self.nostream {
+            out.insert(CompactString::const_new("nostream"), JsonValue::Bool(true));
+        }
+        if let Some(sp) = self.sync_priority {
+            out.insert(
+                CompactString::const_new("sync_priority"),
+                JsonValue::Number(sp.into()),
+            );
+        }
+        if let Some(ref rf) = self.replicatefrom {
+            out.insert(
+                CompactString::const_new("replicatefrom"),
+                JsonValue::String(rf.to_string()),
+            );
+        }
+        out
+    }
+
     /// Flattens custom user tags as strings for lock-free `?tag_<k>=<v>` REST probe matching.
     pub fn custom_string_tags(&self) -> BTreeMap<CompactString, CompactString> {
         let mut out = BTreeMap::new();
@@ -668,6 +752,7 @@ pub struct DaemonConfig {
     pub namespace: CompactString,
     pub config_path: String,
     pub dynamic: DynamicClusterConfig,
+    pub bootstrap_method: Option<CompactString>,
     pub bootstrap_initdb: Vec<JsonValue>,
     pub bootstrap_pg_hba: Vec<String>,
     pub restapi: RestApiConfig,

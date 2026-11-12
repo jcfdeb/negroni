@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
@@ -13,6 +15,18 @@ use thiserror::Error;
 ///
 /// Serializes as a bare `u64` integer in Patroni DCS and REST JSON payloads while
 /// formatting and parsing as PostgreSQL `pg_lsn` (`X/YYYYYYYY`) for SQL and CLI output.
+///
+/// # Examples
+///
+/// ```
+/// use negroni_types::WalLsn;
+///
+/// let lsn: WalLsn = "1/00000148".parse()?;
+/// assert_eq!(lsn.as_u64(), 0x1_0000_0148);
+/// assert_eq!(lsn.to_string(), "1/00000148");
+/// assert_eq!(serde_json::to_string(&lsn)?, "4294967624");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Hash, Serialize, Deserialize,
 )]
@@ -73,6 +87,18 @@ impl FromStr for WalLsn {
 }
 
 /// Supported PostgreSQL major versions (15 through 18).
+///
+/// # Examples
+///
+/// ```
+/// use negroni_types::PgMajor;
+///
+/// let pg17 = PgMajor::from_version_num(170_004)?;
+/// assert_eq!(pg17, PgMajor::V17);
+/// assert!(pg17.capabilities().native_failover_slots);
+/// assert!(PgMajor::from_version_num(140_012).is_err());
+/// # Ok::<(), negroni_types::UnsupportedPgVersion>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PgMajor {
     V15 = 15,
@@ -229,16 +255,44 @@ impl MemberData {
         self.role.as_str() == "standby_leader"
     }
 
-    pub fn bool_tag(&self, key: &str) -> bool {
+    fn raw_bool_tag(&self, key: &str) -> Option<bool> {
         self.tags
             .get(key)
             .or_else(|| self.extra.get(key))
             .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
     }
 
+    fn raw_int_tag(&self, key: &str) -> Option<i64> {
+        self.tags
+            .get(key)
+            .or_else(|| self.extra.get(key))
+            .and_then(serde_json::Value::as_i64)
+    }
+
+    pub fn bool_tag(&self, key: &str) -> bool {
+        self.raw_bool_tag(key).unwrap_or(false)
+    }
+
+    /// Mirrors `patroni.tags.Tags.nofailover`: explicit `nofailover` bool wins; otherwise
+    /// `failover_priority <= 0` disables automatic failover; defaults to `false`.
     pub fn nofailover(&self) -> bool {
-        self.bool_tag("nofailover")
+        if let Some(explicit) = self.raw_bool_tag("nofailover") {
+            explicit
+        } else if let Some(prio) = self.raw_int_tag("failover_priority") {
+            prio <= 0
+        } else {
+            false
+        }
+    }
+
+    /// Mirrors `patroni.tags.Tags.failover_priority`: returns `0` when `nofailover: true`,
+    /// otherwise `tags.failover_priority` defaulting to `1`.
+    pub fn failover_priority(&self) -> i64 {
+        if self.raw_bool_tag("nofailover") == Some(true) {
+            0
+        } else {
+            self.raw_int_tag("failover_priority").unwrap_or(1)
+        }
     }
 
     pub fn noloadbalance(&self) -> bool {
@@ -249,15 +303,26 @@ impl MemberData {
         self.bool_tag("clonefrom")
     }
 
+    /// Mirrors `patroni.tags.Tags.nosync`: explicit `nosync` bool wins; otherwise
+    /// `sync_priority <= 0` excludes the node from synchronous standby selection.
     pub fn nosync(&self) -> bool {
-        self.bool_tag("nosync")
+        if let Some(explicit) = self.raw_bool_tag("nosync") {
+            explicit
+        } else if let Some(prio) = self.raw_int_tag("sync_priority") {
+            prio <= 0
+        } else {
+            false
+        }
     }
 
+    /// Mirrors `patroni.tags.Tags.sync_priority`: returns `0` when `nosync: true`,
+    /// otherwise `tags.sync_priority` defaulting to `1`.
     pub fn sync_priority(&self) -> i64 {
-        self.tags
-            .get("sync_priority")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(0)
+        if self.raw_bool_tag("nosync") == Some(true) {
+            0
+        } else {
+            self.raw_int_tag("sync_priority").unwrap_or(1)
+        }
     }
 
     pub fn replicatefrom(&self) -> Option<&str> {

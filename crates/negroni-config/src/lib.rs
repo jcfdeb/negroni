@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod env_overlay;
 pub mod schema;
 pub mod timing;
@@ -204,6 +206,7 @@ where
         namespace,
         config_path: config_path.to_owned(),
         dynamic,
+        bootstrap_method: raw.bootstrap.method,
         bootstrap_initdb: raw.bootstrap.initdb,
         bootstrap_pg_hba: raw.bootstrap.pg_hba,
         restapi: raw.restapi,
@@ -373,7 +376,9 @@ tags:
             vec!["10.24.0.5:2379".to_owned(), "10.24.0.6:2379".to_owned()]
         );
         assert!(cfg.tags.clonefrom);
-        assert_eq!(cfg.tags.sync_priority, 10);
+        assert_eq!(cfg.tags.sync_priority, Some(10));
+        assert_eq!(cfg.tags.effective_sync_priority(), 10);
+        assert!(!cfg.tags.effective_nosync());
         assert_eq!(
             cfg.tags.custom_string_tags().get("az").map(|s| s.as_str()),
             Some("eu-central-1a")

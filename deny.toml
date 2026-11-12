@@ -1,0 +1,49 @@
+# cargo-deny configuration for Negroni
+# Enforces RustSec advisories, permissive OSI licenses, banned C/legacy crates, and registry hygiene.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = [
+    # Enforce pure-Rust static musl portability (no C OpenSSL)
+    { name = "openssl", reason = "Use rustls + tokio-rustls instead of C OpenSSL" },
+    { name = "openssl-sys", reason = "Use rustls + tokio-rustls instead of C OpenSSL" },
+    # Enforce safe, maintained YAML parsing (saphyr)
+    { name = "serde_yaml", reason = "Deprecated upstream; use saphyr" },
+    { name = "serde_yml", reason = "Unsound fork; use saphyr" },
+    { name = "unsafe-libyaml", reason = "Transpiled unsafe C YAML parser; use safe saphyr" },
+    # Enforce Red Line #4: single-connection local PostgreSQL control (no connection pools)
+    { name = "deadpool-postgres", reason = "Local SQL must use single-connection SqlControlActor" },
+    { name = "bb8-postgres", reason = "Local SQL must use single-connection SqlControlActor" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -92,19 +92,25 @@ mod linux_sys {
 
     pub(super) fn set_timeout_secs(file: &File, requested_secs: i32) -> io::Result<i32> {
         let mut secs = requested_secs;
-        // SAFETY: `WDIOC_SETTIMEOUT` (`_IOWR('W', 6, int)`) reads the requested integer
-        // timeout in seconds from `secs` and writes the driver's actual programmed timeout
-        // in seconds back into `secs`.
-        let ctl = unsafe { Updater::<WDIOC_SETTIMEOUT, i32>::new(&mut secs) };
-        unsafe { ioctl::ioctl(file, ctl) }.map_err(io::Error::from)?;
+        // SAFETY: `WDIOC_SETTIMEOUT` (`_IOWR('W', 6, int)`) matches the Linux kernel
+        // `include/uapi/linux/watchdog.h` ABI: it reads an aligned `i32` timeout in seconds
+        // from `&mut secs` and writes the driver's actual programmed timeout back into `secs`
+        // over the valid open watchdog file descriptor `file`.
+        unsafe {
+            let ctl = Updater::<WDIOC_SETTIMEOUT, i32>::new(&mut secs);
+            ioctl::ioctl(file, ctl).map_err(io::Error::from)?;
+        }
         Ok(secs)
     }
 
     pub(super) fn send_keepalive(file: &File) -> io::Result<()> {
-        // SAFETY: `WDIOC_KEEPALIVE` (`_IOR('W', 5, int)`) expects a valid aligned `int *`
-        // user pointer (`Getter` provides a `MaybeUninit<i32>` buffer on the stack).
-        let ctl = unsafe { Getter::<WDIOC_KEEPALIVE, i32>::new() };
-        let _ = unsafe { ioctl::ioctl(file, ctl) }.map_err(io::Error::from)?;
+        // SAFETY: `WDIOC_KEEPALIVE` (`_IOR('W', 5, int)`) matches the Linux kernel watchdog
+        // ABI: `Getter` allocates an aligned `MaybeUninit<i32>` output slot on the stack for
+        // the `ioctl` call on the valid open watchdog file descriptor `file`.
+        unsafe {
+            let ctl = Getter::<WDIOC_KEEPALIVE, i32>::new();
+            let _ = ioctl::ioctl(file, ctl).map_err(io::Error::from)?;
+        }
         Ok(())
     }
 }

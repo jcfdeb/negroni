@@ -10,6 +10,4 @@ workspace = true
 
 [dependencies]
 clap.workspace = true
-negroni-config.workspace = true
 negroni-dcs.workspace = true
-negroni-types.workspace = true
