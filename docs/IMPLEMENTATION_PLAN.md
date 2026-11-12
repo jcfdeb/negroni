@@ -37,19 +37,19 @@ Every task below maps directly to `docs/HLD.md` and `docs/LLD.md`. Complete phas
 
 ## Phase 2: PostgreSQL 15–18 Supervisor & Dual-Mode Slot Manager (`negroni-pg`)
 
-- [ ] **2.1 Version Capability Table & `pidfd` Process Supervisor**
+- [x] **2.1 Version Capability Table & `pidfd` Process Supervisor**
   - **Files:** `crates/negroni-pg/src/{version.rs, process.rs, pidfd_monitor.rs}`.
   - **Deliverable:** Implement `PgMajor` (`15..=18`), `PgCapabilities`, `PgProcessState` (`0..=14`), zero-downtime `postmaster.pid` adoption via Linux `pidfd_open` + `AsyncFd` (with POSIX fallback), `initdb` runner, and the two-stage emergency demotion ladder (`SIGINT` -> `SIGQUIT` at `T_wd - 2s` -> atomic `standby.signal`).
-- [ ] **2.2 Single-Connection `SqlControlActor`**
+- [x] **2.2 Single-Connection `SqlControlActor`**
   - **Files:** `crates/negroni-pg/src/sql_actor.rs`.
   - **Deliverable:** Bounded-channel single persistent `tokio_postgres::Client` (Unix socket + `rustls` fallback), 1-RTT telemetry SQL query, `pg_promote()`, and version-routed checkpoint stats (`pg_stat_bgwriter` on 15–16 vs `pg_stat_checkpointer` on 17–18).
-- [ ] **2.3 Atomic Config Writer, Unit Canonicalizer, HBA/Ident Validator & Parser Fuzzers**
+- [x] **2.3 Atomic Config Writer, Unit Canonicalizer, HBA/Ident Validator & Parser Fuzzers**
   - **Files:** `crates/negroni-pg/src/{config_writer.rs, guc_units.rs, hba_validator.rs}`, `fuzz/fuzz_targets/{patroni_yaml.rs, wire_json.rs, guc_units.rs, hba_validator.rs}`.
   - **Deliverable:** `postgresql.base.conf` preservation, crash-safe `.tmp` + `fsync` + `rename` + dir `fsync` writer, byte/microsecond GUC unit normalizer, PG 16+ `include*`/`/regex/` validator, PG 18 `oauth` + Async I/O validator, and `cargo-fuzz` targets covering YAML/JSON/GUC/HBA untrusted inputs.
-- [ ] **2.4 Replica Cloning, `pg_rewind` & Custom Bootstrap Hooks**
+- [x] **2.4 Replica Cloning, `pg_rewind` & Custom Bootstrap Hooks**
   - **Files:** `crates/negroni-pg/src/{clone.rs, rewind.rs}`.
   - **Deliverable:** `pg_basebackup` streaming clone (`clonefrom` aware), custom replica commands (`wal-g`, `pgbackrest`, `barman`), timeline history divergence check, checksum/`wal_log_hints` gate, and `pg_rewind --restore-target-wal` runner.
-- [ ] **2.5 Dual-Mode Replication Slot Manager (PG 15–16 vs. 17–18)**
+- [x] **2.5 Dual-Mode Replication Slot Manager (PG 15–16 vs. 17–18)**
   - **Files:** `crates/negroni-pg/src/slots.rs`.
   - **Deliverable:** Physical member slot TTL cleanup, PG 15–16 `pg_replication_slot_advance()` sync, and PG 17–18 native `failover = true` `slotsync` integration (`dbname` injection in `primary_conninfo`, `synchronized_standby_slots` rendering, and stale `failover = true AND synced = false` slot drop on demoted/rewound primaries).
 

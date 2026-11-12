@@ -18,7 +18,7 @@
 
 **Negroni** is a deterministic, memory-safe, **1:1 wire-compatible Rust implementation of [Patroni 4.1+](https://github.com/patroni/patroni)** scoped to **PostgreSQL 15 through 18** (and Citus 12+). It compiles into a single static multicall Linux/POSIX binary (`negroni`) that also serves as `patronictl` and `negronictl`.
 
-> **Project Status:** Pre-v0.1 active development. Phase 0 (wire models, `patroni.yml`/env config engine) and Phase 1 (hardware watchdog thread, pure HA reducer, cancel-safe coordinator, and 10,000+ `SimCluster` DST schedules) are complete; Phase 2 (`negroni-pg`) is next. See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for live progress.
+> **Project Status:** Pre-v0.1 active development. Phase 0 (wire models, `patroni.yml`/env config engine), Phase 1 (hardware watchdog thread, pure HA reducer, cancel-safe coordinator, and 10,000+ `SimCluster` DST schedules), and Phase 2 (`negroni-pg` PostgreSQL 15–18 `pidfd` supervisor, single-connection `SqlControlActor`, atomic config/HBA validator, `pg_basebackup`/`pg_rewind`, dual-mode slot manager, and parser fuzzers) are complete; Phase 3 (Tier-1 DCS drivers, REST API, and CLI) is next. See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for live progress.
 
 ---
 > Status: **experimental**

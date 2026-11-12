@@ -32,6 +32,42 @@ impl JobRunner for NoopJobRunner {
     }
 }
 
+impl JobRunner for negroni_pg::PgSupervisor {
+    async fn run_job(
+        &self,
+        job: JobKind,
+        target_conn: Option<String>,
+        cancel_rx: watch::Receiver<bool>,
+    ) -> Result<(), String> {
+        match job {
+            JobKind::InitDb => self
+                .run_initdb_job(cancel_rx)
+                .await
+                .map_err(|e| e.to_string()),
+            JobKind::CustomBootstrap => self
+                .run_custom_bootstrap_job(cancel_rx)
+                .await
+                .map_err(|e| e.to_string()),
+            JobKind::BaseBackup => {
+                let conn = target_conn.ok_or_else(|| {
+                    "BaseBackup job dispatched without upstream connection string".to_owned()
+                })?;
+                self.run_clone_job(&conn, cancel_rx)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            JobKind::PgRewind => {
+                let conn = target_conn.ok_or_else(|| {
+                    "PgRewind job dispatched without target leader connection string".to_owned()
+                })?;
+                self.run_rewind_job(&conn, cancel_rx)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+}
+
 struct ActiveJob {
     state_epoch: u64,
     job: JobKind,

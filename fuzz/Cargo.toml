@@ -1,0 +1,46 @@
+[package]
+name = "negroni-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+negroni-config = { path = "../crates/negroni-config" }
+negroni-pg = { path = "../crates/negroni-pg" }
+negroni-types = { path = "../crates/negroni-types" }
+serde_json = "1.0"
+
+[[bin]]
+name = "patroni_yaml"
+path = "fuzz_targets/patroni_yaml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_json"
+path = "fuzz_targets/wire_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "guc_units"
+path = "fuzz_targets/guc_units.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hba_validator"
+path = "fuzz_targets/hba_validator.rs"
+test = false
+doc = false
+bench = false

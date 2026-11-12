@@ -22,6 +22,10 @@ patroni.dynamic.json
 
 # Coverage, profiling & fuzzing outputs
 /coverage/
+/fuzz/Cargo.lock
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
 *.profraw
 *.profdata
 lcov.info

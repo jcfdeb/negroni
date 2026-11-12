@@ -104,6 +104,52 @@ impl PgControlPort for NoopPgControlPort {
     }
 }
 
+impl PgControlPort for negroni_pg::PgSupervisor {
+    async fn start_as_replica(&self) -> Result<(), String> {
+        Self::start_as_replica(self)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn promote(&self) -> Result<(), String> {
+        Self::promote(self).await.map_err(|e| e.to_string())
+    }
+
+    async fn demote(&self, immediate_at: Instant) -> Result<(), String> {
+        Self::demote(self, immediate_at)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn reconfigure_standby(
+        &self,
+        primary_conninfo: &str,
+        slot_name: Option<&str>,
+    ) -> Result<(), String> {
+        Self::reconfigure_standby(self, primary_conninfo, slot_name)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn set_synchronous_standby_names(&self, guc_value: &str) -> Result<(), String> {
+        Self::set_synchronous_standby_names(self, guc_value)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn sync_slots(
+        &self,
+        status: &ClusterStatus,
+        is_primary: bool,
+        is_demoted_rejoin: bool,
+    ) -> Result<(), String> {
+        Self::sync_slots(self, status, is_primary, is_demoted_rejoin, &[])
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct NoopPeerRpcPort;
 
